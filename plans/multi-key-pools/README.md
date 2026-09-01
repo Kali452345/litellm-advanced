@@ -164,6 +164,11 @@ The alternative was one flat pool holding every key of every provider behind a s
 would then get an arbitrary model per request with no way to ask for a specific one, and because a per-minute capacity
 roll-up would be summing keys for models that are not interchangeable
 
+This decision has one consequence that has to be handled in phase 1 rather than discovered later. Six deployments built
+from one key have six different `model_info.id` values, because `generate_model_id` hashes the model group in, so a quota
+counter keyed on the deployment id would enforce a 5/min key at 5/min six separate times. The counters are therefore
+scoped to the credential, not the deployment
+
 **A failed request keeps its quota charge when the provider saw it.**
 Refund on `APIConnectionError` and `Timeout`, where the request demonstrably never landed. Keep the charge on a
 provider-side 429, 4xx or 5xx, because the provider counted it against the account, and counting less than they do means

@@ -12,9 +12,10 @@ window-counter helper that phases 2 and 3 both call. `rpd` appears nowhere in `l
 
 | File | Change |
 |---|---|
-| `litellm/types/router.py` | `rpd: int \| None` and `quota_reset_timezone: str \| None` on `GenericLiteLLMParams` (:287-302) and `LiteLLMParamsTypedDict` (:443-511), both `ReadOnly[...]` per LIT012 |
+| `litellm/types/router.py` | `rpd: int \| None`, `quota_reset_timezone: str \| None`, `quota_scope: str \| None` and `quota_scope_id: str \| None` on `GenericLiteLLMParams` (:287-302) and `LiteLLMParamsTypedDict` (:443-511), all `ReadOnly[...]` per LIT012 |
 | `litellm/router_utils/quota/window.py` | New. Window identity, key derivation, TTL-to-boundary |
 | `litellm/router_utils/quota/counter.py` | New. `AtomicWindowCounter`: reserve, refund, peek |
+| `litellm/router_utils/quota/scope.py` | New. Credential-scoped counter identity |
 | `litellm/router_utils/quota/__init__.py` | New. Public surface, nothing else |
 | `litellm/constants.py` | `DEFAULT_QUOTA_MAX_WAIT_SECONDS`, `QUOTA_COUNTER_KEY_PREFIX` |
 
@@ -35,9 +36,31 @@ the next local midnight, so the key expires exactly when the quota resets and th
 about
 
 ```
-{model_id}:{litellm_model}:rpm:{%H-%M}
-{model_id}:{litellm_model}:rpd:{YYYY-MM-DD}:{tz}
+{scope}:{litellm_model}:rpm:{%H-%M}
+{scope}:{litellm_model}:rpd:{YYYY-MM-DD}:{tz}
 ```
+
+## What `scope` is, and why it is not the deployment id
+
+`scope` identifies the credential, not the deployment, and getting this wrong silently multiplies every cap
+
+The topology decision in the README means one key supporting six models becomes six deployments spread across six model
+groups. `generate_model_id` hashes the model group into the id (router.py:8107), so those six deployments have six
+different ids. Key the counter on `model_id` and a 5/min key is enforced at 5/min six times over, which is 30/min against
+a provider that will start hard-rejecting at 5. The same split happens if one key and model are listed under two
+`model_name` values, which is a reasonable thing to do
+
+Derive `scope` from the credential instead, in this precedence: an explicit `quota_scope_id` litellm param when the
+operator sets one, then `litellm_credential_name` when the deployment uses a stored credential, then a truncated
+HMAC-SHA256 of the resolved `(api_base, api_key)` pair. HMAC with `LITELLM_SALT_KEY` rather than a bare digest, because a
+plain sha256 of a key sitting in a Redis key name lets anyone who can read those names confirm a guessed key. The scope
+value never leaves the process: it is not logged, and phase 6's endpoint does not return it
+
+Keeping `{litellm_model}` in the key is deliberate, because most free tiers cap per model per account rather than per
+account. A `quota_scope` param with values `credential_model` (default) and `credential` drops that segment for the
+providers that meter the whole account, so an operator can match whichever shape their provider actually uses. Defaulting
+to the per-model shape matches the common case, and the failure mode of picking wrong is visible in both directions:
+too narrow and the pool takes real 429s it thought were impossible, too wide and keys idle on quota they could spend
 
 The timezone is in the day key on purpose. Change a key's `quota_reset_timezone` and it starts counting in a fresh
 namespace rather than inheriting a count that was accumulated against a different midnight. The cost is that the change
@@ -121,6 +144,13 @@ the key carries that date, advance 31 seconds, assert a fresh key with a full al
 to prove the two do not collide. Hardcode UTC anywhere and this fails
 
 Timezone validation. An unknown `quota_reset_timezone` raises at construction and does not silently become UTC
+
+Shared scope across model groups. Two deployments built from the same credential and the same underlying model but
+listed under two different `model_name` values must share one counter: reserve through one, assert the other now sees the
+count. Key on `model_id` and this fails, which is the regression test for the multiplied-cap bug
+
+Scope separation. Two deployments with different credentials must never share a counter, and switching a deployment from
+`credential_model` to `credential` must merge its per-model counters into one rather than double-counting
 
 Do not assert that a function exists, that a constant has a particular value, or that a key is formatted a certain way
 in isolation. Assert the counting behaviour those things produce

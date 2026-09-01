@@ -79,6 +79,11 @@ with the existing weighted shuffle rather than by list order, so two identical k
 Ratio rather than absolute remaining is the point of the decision already made: a 5/min key and a 60/min key in one pool
 should receive load in proportion to what they can absorb, and absolute remaining would starve the small one
 
+One property of the credential-scoped counters from phase 1 shows up here and is worth expecting rather than debugging. A
+key's ratio reflects all traffic on that credential, including requests sent to other model names it also serves, so a
+key can be ranked last, or filtered out entirely, without this pool having sent it anything. That is correct, since the
+provider's cap is what it is, but it does mean a pool's own request count will not explain its own ranking
+
 Where it goes is a real fork in the road. A new `RoutingStrategy` value is the honest home, and it is what the existing
 strategy files model. The cost is `_maybe_run_weighted_failover` bailing unless the strategy is exactly `simple-shuffle`
 (router.py:6884, 6713-6788), so a new strategy silently loses immediate failover. Phase 4 lifts that restriction, which

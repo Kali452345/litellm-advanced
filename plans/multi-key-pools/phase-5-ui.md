@@ -70,6 +70,10 @@ operations with different consequences, and the UI is where that distinction has
 Per member: requests used this minute against the cap, requests used today against the cap, and whether the key is
 currently skipped. Phase 6 adds the endpoint this reads
 
+A key's usage is per credential, not per deployment, so one key that serves several model names shows the same numbers in
+every pool it appears in, and traffic sent to one of those pools moves the bar in all of them. Say so in the column
+header, because an operator watching a bar climb while their pool sits idle will otherwise read it as a bug
+
 Keep it honest about staleness. These counters move every second and a table that looks live but is thirty seconds
 stale is worse than one that shows its age, so render the fetch time. Poll on an interval through TanStack Query rather
 than pushing, since there is no stream for this and adding one is not worth it

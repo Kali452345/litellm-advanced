@@ -11,7 +11,13 @@ cap with its timezone, whether the key is currently skipped, and when its next w
 `peek` from phase 1, so there is exactly one definition of what the counters mean and no second copy to drift
 
 Read-only and never returns a secret. Deployment id, provider and api_base are fine. The key itself, and any masked
-form of it that could confirm a guess, are not
+form of it that could confirm a guess, are not. That includes phase 1's `scope` value: it is an HMAC of the key, so
+returning it would let anyone holding a guessed key check the guess against the response
+
+Because counters are credential-scoped, several deployments in the response will legitimately report identical usage
+numbers, which is correct rather than a bug: one key serving six models has one minute budget. Group the response by
+scope so the UI can render one usage bar per key instead of six copies of the same one, keyed by an opaque per-response
+index rather than by the scope value itself
 
 Auth on it should match `/model/info` rather than being more permissive, since knowing which of an operator's keys are
 exhausted is operationally sensitive

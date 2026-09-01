@@ -61,6 +61,12 @@ request demonstrably never landed. Do not refund on a provider-side 429, 4xx or 
 counting less than they do means overshooting the real cap. This is the recommendation in the README's open questions
 and it is the one place where being wrong is cheap to reverse: it is a single predicate
 
+`Timeout` is the imprecise edge and the implementation should not pretend otherwise. A connect timeout never reached the
+provider and is a clean refund; a read timeout means the provider is already generating and will count the request, so
+refunding it undercounts. Inspect the underlying `httpx` exception where it survives the wrap and only refund the connect
+case. Where it does not survive, charge rather than refund, since a small idle margin beats a hard rejection the pool
+believed was impossible
+
 Mirror the existing io-token pattern for how the refund finds its keys. `ModelRateLimitingCheck` stashes a marker in
 metadata (`ITPM_RESERVED_KEY`, checked in both `slo_metadata` and `kwargs_metadata` at
 model_rate_limit_check.py:320-322) so the refund works off kwargs alone and does not need the deployment dict back.

@@ -6,7 +6,7 @@ import datetime
 import enum
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar, get_type_hints
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeAlias, TypeVar, get_type_hints
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -34,6 +34,10 @@ class ConfigurableClientsideParamsCustomAuth(TypedDict):
 
 
 CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = list[str | ConfigurableClientsideParamsCustomAuth] | None
+
+# Free tiers differ: some meter a whole account, others meter each model on it,
+# so which models share a credential's counters is configurable.
+QuotaScopeMode: TypeAlias = Literal["credential", "credential_model"]
 
 
 class ModelConfig(BaseModel):
@@ -294,6 +298,12 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
     rpm: int | None = None
     itpm: int | None = None
     otpm: int | None = None
+    # `rpd` caps a calendar day the way `rpm` caps a minute. Both count per
+    # credential, not per deployment, so one key's models share the allowance.
+    rpd: int | None = None
+    quota_reset_timezone: str | None = None
+    quota_scope: QuotaScopeMode | None = None
+    quota_scope_id: str | None = None
     timeout: float | str | httpx.Timeout | None = None  # if str, pass in as os.environ/
     stream_timeout: float | str | None = None  # timeout when making stream=True calls, if str, pass in as os.environ/
     max_retries: int | None = None
@@ -447,6 +457,10 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     rpm: int | None
     itpm: int | None
     otpm: int | None
+    rpd: ReadOnly[int | None]
+    quota_reset_timezone: ReadOnly[str | None]
+    quota_scope: ReadOnly[QuotaScopeMode | None]
+    quota_scope_id: ReadOnly[str | None]
     order: int | None
     weight: int | None
     max_parallel_requests: int | None

@@ -1230,7 +1230,7 @@ class RedisCache(BaseCache):
     @_redis_circuit_breaker_guard
     async def async_batch_get_cache(
         self,
-        key_list: list[str] | list[str | None],
+        key_list: Sequence[str | None],
         parent_otel_span: Span | None = None,
     ) -> dict:
         """

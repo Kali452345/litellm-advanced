@@ -76,6 +76,9 @@ proxy = [
     "soundfile>=0.12.1,<1.0",
     "pyroscope-io>=0.8.16,<1.0; sys_platform != 'win32'",
     "expression>=5.6.0,<6.0",
+    # Windows ships no system tz database, so zoneinfo cannot load the IANA name
+    # an operator sets in `quota_reset_timezone`.
+    "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 # Thin client install for the `lite` CLI on developer laptops. The CLI's heavy
 # imports are all guarded, so it runs on the base SDK plus just these five, and
@@ -202,7 +205,7 @@ dev = [
     "opentelemetry-instrumentation-fastapi==0.49b0",
     "langfuse==2.59.7",
     "fastapi-offline==1.7.6",
-    "fakeredis==2.34.1",
+    "fakeredis[lua]==2.34.1",
     "pytest-rerunfailures==15.1",
     "pytest-cov==5.0.0",
     "parameterized==0.9.0",
@@ -210,6 +213,7 @@ dev = [
     "pytest-timeout==2.4.0",
     "vcrpy==8.2.1",
     "pytest-recording==0.13.4",
+    "tzdata==2025.2",
 ]
 e2e-dev = [
     "playwright==1.61.0",

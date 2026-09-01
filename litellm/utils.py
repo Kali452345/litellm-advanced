@@ -4907,7 +4907,8 @@ def _get_excluded_filtered_deployments(
 
     Used by weighted-routing failover so a single logical request can re-pick
     across the remaining deployments in the same model group after one of them
-    has failed.
+    has failed, and by quota routing to drop the credentials that have no
+    requests left in the current minute or day.
 
     If the filter would leave no deployments, an empty list is returned so the
     caller raises its usual no-deployments error and the weighted-failover

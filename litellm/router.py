@@ -170,6 +170,11 @@ from litellm.router_utils.pre_call_checks.model_rate_limit_check import (
 from litellm.router_utils.pre_call_checks.prompt_caching_deployment_check import (
     PromptCachingDeploymentCheck,
 )
+from litellm.router_utils.quota import (
+    AtomicWindowCounter,
+    QuotaEnforcer,
+    warn_on_unenforced_quotas,
+)
 from litellm.router_utils.reasoning_effort_capability import (
     deployment_is_catalog_mapped,
     intersect_supported_reasoning_efforts,
@@ -346,6 +351,7 @@ def model_info_is_active_for_environment(model_info: Mapping[str, object] | None
 
 
 _PreRoutingStrategyT = TypeVar("_PreRoutingStrategyT")
+_DeploymentT: Final = TypeVar("_DeploymentT", bound=Mapping[str, object])
 
 _ALIAS_PARAMS_NEVER_FORWARDED: Final = frozenset({"model", "api_base", "api_key", "api_version"})
 _ALIAS_MARKER_FORWARDED_PARAMS_KWARG: Final = "_alias_marker_forwarded_params"
@@ -639,6 +645,7 @@ class Router:
         background_health_check_model_groups: Sequence[str] | None = None,
         enable_weighted_failover: bool = False,
         fallback_access_check: FallbackAccessCheck | None = None,
+        enable_quota_routing: bool = False,
     ) -> None:
         """
         Initialize the Router class with the given parameters for caching, reliability, and routing strategy.
@@ -676,6 +683,7 @@ class Router:
             ignore_invalid_deployments (bool): Ignores invalid deployments, and continues with other deployments. Default is to raise an error.
             enable_weighted_failover (bool): When True and the routing strategy is "simple-shuffle", a retryable failure on one deployment causes the request to re-pick (weighted) across the other deployments in the same model group before any cross-group fallback runs. Bounded by `max_fallbacks`. Async-only: currently honored by `router.acompletion()` and other async entrypoints. The sync `router.completion()` path falls back to the regular fallback flow. Defaults to False.
             fallback_access_check (Optional[FallbackAccessCheck]): Awaited before each cross-model-group fallback attempt on the async path; a fallback target it rejects is skipped. Defaults to None (every configured fallback is attempted).
+            enable_quota_routing (bool): When True, `rpm` and `rpd` on a deployment become hard per-credential caps: a deployment with no allowance left in the current minute or local day is dropped before routing picks one, and the winner's slot is reserved atomically before the request goes out. Counters key on the credential, not the deployment, so one key serving several models shares one allowance. Async-only, and skipped by the routing strategies that select on the sync path ("usage-based-routing", "lar1"). Defaults to False, which leaves `rpm` as the simple-shuffle weight it has always been.
         Returns:
             Router: An instance of the litellm.Router class.
 
@@ -776,6 +784,9 @@ class Router:
         self.cache = DualCache(
             redis_cache=redis_cache, in_memory_cache=InMemoryCache()
         )  # use a dual cache (Redis+In-Memory) for tracking cooldowns, usage, etc.
+        self.quota_enforcer: QuotaEnforcer | None = (
+            QuotaEnforcer(AtomicWindowCounter(self.cache)) if enable_quota_routing else None
+        )
 
         ### SCHEDULER ###
         self.scheduler = Scheduler(polling_interval=polling_interval, redis_cache=redis_cache)
@@ -884,6 +895,11 @@ class Router:
 
         self.retry_after = retry_after
         self.routing_strategy = self._normalize_strategy(routing_strategy)
+        warn_on_unenforced_quotas(
+            model_list=self.model_list,
+            routing_strategy=self.routing_strategy,
+            enable_quota_routing=enable_quota_routing,
+        )
         self._routing_groups_input: list[RoutingGroup | dict] | None = routing_groups
 
         ## SETTING FALLBACKS ##
@@ -1523,6 +1539,24 @@ class Router:
                 )
             case _:
                 return None
+
+    async def _reserved_within_quota(
+        self,
+        selected: _DeploymentT | None,
+        candidates: Sequence[_DeploymentT],
+    ) -> _DeploymentT | None:
+        """
+        Take a request slot on `selected`, or on the next candidate that has one.
+
+        Selection already skipped the keys that were spent when it read the
+        counters. This is what makes the decision safe under concurrency: two
+        requests can both pick the key with one slot left, and only one of them
+        gets it. The loser lands on another key instead of failing, so a shared
+        free tier degrades into rotation rather than into 429s.
+        """
+        if self.quota_enforcer is None or selected is None:
+            return selected
+        return await self.quota_enforcer.reserve_first_available(selected, candidates)
 
     def _select_deployment_sync(
         self,
@@ -11930,10 +11964,23 @@ class Router:
             request_kwargs=request_kwargs,
         )
 
+        ## QUOTA FILTERING ## -> drop deployments whose credential has no rpm/rpd
+        ## room left in the current window. Runs before ORDER FILTERING so a spent
+        ## order=1 key hands the group to order=2 instead of failing the request.
+        quota_enforcer: Final = self.quota_enforcer
+        quota_filtered: Final = (
+            litellm.utils._get_excluded_filtered_deployments(
+                healthy_deployments,
+                excluded_deployment_ids=await quota_enforcer.exhausted_deployment_ids(healthy_deployments),
+            )
+            if quota_enforcer is not None and isinstance(healthy_deployments, list)
+            else healthy_deployments
+        )
+
         ## ORDER FILTERING ## -> if user set 'order' in deployments, return deployments with lowest order (e.g. order=1 > order=2)
         _target_order: Final = (request_kwargs or {}).pop("_target_order", None)
         healthy_deployments = litellm.utils._get_order_filtered_deployments(
-            cast(list[dict], healthy_deployments), target_order=_target_order
+            cast(list[dict], quota_filtered), target_order=_target_order
         )
 
         ## WEIGHTED FAILOVER EXCLUSION ## -> drop deployments already tried in
@@ -12056,12 +12103,18 @@ class Router:
 
             start_time: Final = time.time()
             if strategy == "simple-shuffle":
-                return simple_shuffle(
-                    llm_router_instance=self,
-                    healthy_deployments=healthy_deployments,
-                    model=model,
+                reserved: Final = await self._reserved_within_quota(
+                    simple_shuffle(llm_router_instance=self, healthy_deployments=healthy_deployments, model=model),
+                    healthy_deployments,
                 )
-            deployment: Final = await self._select_deployment_async(
+                if reserved is None:
+                    raise await async_raise_no_deployment_exception(
+                        litellm_router_instance=self,
+                        model=model,
+                        parent_otel_span=parent_otel_span,
+                    )
+                return reserved
+            selected: Final = await self._select_deployment_async(
                 strategy=strategy,
                 selector=strategy_selector,
                 model=model,
@@ -12070,6 +12123,7 @@ class Router:
                 input=input,
                 request_kwargs=request_kwargs,
             )
+            deployment: Final = await self._reserved_within_quota(selected, healthy_deployments)
             if deployment is None:
                 exception: Final = await async_raise_no_deployment_exception(
                     litellm_router_instance=self,

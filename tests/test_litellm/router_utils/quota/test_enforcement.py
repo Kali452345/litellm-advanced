@@ -74,6 +74,15 @@ async def exhausted(subject: QuotaEnforcer, pool: list[dict]) -> frozenset[str]:
     return (await subject.availability(pool)).exhausted_deployment_ids
 
 
+async def ranked(subject: QuotaEnforcer, pool: list[dict]) -> tuple[str, ...]:
+    return tuple(str(candidate["model_info"]["id"]) for candidate in await subject.most_spent_first(pool))
+
+
+async def spend(subject: QuotaEnforcer, target: dict, times: int) -> None:
+    for _ in range(times):
+        assert await subject.reserve_first_available(target, [target]) is target
+
+
 def quota_records(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [record.getMessage() for record in caplog.records if record.name == ROUTER_LOGGER]
 
@@ -441,34 +450,89 @@ async def test_capacity_that_never_arrives_is_reported_after_one_hold():
     assert availability.seconds_until_reset == SECONDS_TO_NEXT_MINUTE
 
 
-async def test_selection_only_sees_the_candidates_with_room_left():
+async def test_the_fullest_credential_is_offered_first():
     subject = enforcer()
-    spent = deployment("spent", api_key="k1", rpm=1)
-    open_key = deployment("open", api_key="k2", rpm=1)
-    uncapped = deployment("uncapped", api_key="k3")
-    pool = [spent, open_key, uncapped]
+    pool = [deployment("d1", api_key="k1", rpm=5), deployment("d2", api_key="k2", rpm=5)]
 
-    assert await subject.reserve_first_available(spent, [spent]) is spent
+    await spend(subject, pool[1], 3)
 
-    candidates, reset_seconds = await subject.candidates_with_capacity(pool)
-
-    assert candidates == (open_key, uncapped), "a spent key must be gone before selection weighs the pool"
-    assert reset_seconds is None, "there is room left, so there is nothing to report a retry-after for"
-
-
-async def test_a_pool_with_nothing_left_yields_no_candidates_and_a_retry_after():
-    clock = Clock()
-    subject = enforcer(clock, sleep=FakeSleep(clock, moves_clock=False))
-    pool = [deployment("d1", api_key="k1", rpm=1)]
-
-    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
-
-    candidates, reset_seconds = await subject.candidates_with_capacity(pool)
-
-    assert candidates == ()
-    assert reset_seconds == SECONDS_TO_NEXT_MINUTE, (
-        "a caller left with nothing has to be told the second the pool frees up, or it retries blind"
+    assert await ranked(subject, pool) == ("d2", "d1"), (
+        "a pool has to drain one credential before it moves on, or the provider's prompt cache "
+        "cold-misses on every request"
     )
+
+
+async def test_a_credential_with_no_quota_is_the_last_resort():
+    subject = enforcer()
+    pool = [deployment("uncapped", api_key="k1"), deployment("fresh", api_key="k2", rpm=5)]
+
+    assert await ranked(subject, pool) == ("fresh", "uncapped"), (
+        "an unmetered key is the overflow the pool spills into, so it ranks behind every metered "
+        "one even when none of them has been touched"
+    )
+
+
+async def test_a_fresh_pool_keeps_the_order_it_was_given():
+    subject = enforcer()
+    pool = [deployment(f"d{index}", api_key=f"k{index}", rpm=5) for index in range(1, 5)]
+
+    assert await ranked(subject, pool) == ("d1", "d2", "d3", "d4"), (
+        "nothing is spent, so there is nothing to rank on; reshuffling here is the random pick "
+        "that stickiness exists to replace"
+    )
+
+
+async def test_the_fraction_spent_decides_rather_than_the_raw_count():
+    subject = enforcer()
+    roomy = deployment("roomy", api_key="k1", rpm=100)
+    tight = deployment("tight", api_key="k2", rpm=5)
+
+    await spend(subject, roomy, 10)
+    await spend(subject, tight, 1)
+
+    assert await ranked(subject, [roomy, tight]) == ("tight", "roomy"), (
+        "10 of 100 is a tenth of the allowance and 1 of 5 is a fifth, so ranking on requests "
+        "served would drain the roomy key and strand the tight one"
+    )
+
+
+async def test_the_tightest_window_decides_rather_than_the_loosest():
+    subject = enforcer()
+    day_bound = deployment("day-bound", api_key="k1", rpm=100, rpd=4)
+    even = deployment("even", api_key="k2", rpm=10, rpd=10)
+
+    await spend(subject, day_bound, 2)
+    await spend(subject, even, 1)
+
+    assert await ranked(subject, [day_bound, even]) == ("day-bound", "even"), (
+        "half the day allowance is gone against a fiftieth of the minute, so scoring the loosest "
+        "window keeps feeding the key that runs out first"
+    )
+
+
+async def test_a_credential_with_a_zero_allowance_is_ranked_without_dividing_by_it():
+    subject = enforcer()
+    pool = [deployment("blocked", api_key="k1", rpm=0), deployment("open", api_key="k2", rpm=5)]
+
+    assert await ranked(subject, pool) == ("blocked", "open")
+    assert await exhausted(subject, pool) == {"blocked"}, "a key allowed nothing can never be selected"
+
+
+async def test_a_pool_is_drained_one_credential_at_a_time():
+    subject = enforcer()
+    pool = [deployment(f"d{index}", api_key=f"k{index}", rpm=5) for index in range(1, 4)]
+    served: list[str] = []
+
+    for _ in range(15):
+        rotation = await subject.most_spent_first(pool)
+        reserved = await subject.reserve_first_available(rotation[0], rotation)
+        assert reserved is not None
+        served.append(str(reserved["model_info"]["id"]))
+
+    assert served == ["d1"] * 5 + ["d2"] * 5 + ["d3"] * 5, (
+        "rotation belongs at the moment a key runs out of allowance, not on every request"
+    )
+    assert await subject.reserve_first_available(pool[0], pool) is None, "15 of 15 slots are gone"
 
 
 async def test_a_refund_gives_the_slot_back():

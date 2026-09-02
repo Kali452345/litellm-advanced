@@ -59,7 +59,7 @@ class Reservation:
     reserved_at: dt.datetime
 
 
-def mark_reservation(request_kwargs: Mapping[str, object] | None, *, reserved_at: dt.datetime) -> None:
+def mark_reservation(request_kwargs: Mapping[str, object], *, reserved_at: dt.datetime) -> None:
     """
     Stamp the request so its failure callback can find the reservation.
 
@@ -67,8 +67,6 @@ def mark_reservation(request_kwargs: Mapping[str, object] | None, *, reserved_at
     is the same dict the call carries into logging, so a request that never had one
     does not grow one here.
     """
-    if request_kwargs is None:
-        return
     for channel in (request_kwargs.get(name) for name in _METADATA_CHANNELS):
         if isinstance(channel, dict):
             channel[QUOTA_RESERVED_AT_KEY] = reserved_at.timestamp()

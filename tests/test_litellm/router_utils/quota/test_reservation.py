@@ -98,10 +98,6 @@ def test_marking_never_grows_a_metadata_channel_the_request_did_not_have():
     assert request == {"litellm_params": {"model": MODEL, "model_info": {"id": DEPLOYMENT_ID}}}
 
 
-def test_marking_a_request_that_has_no_kwargs_at_all_is_harmless():
-    mark_reservation(None, reserved_at=RESERVED_AT)
-
-
 def test_a_stamp_nested_under_litellm_params_is_still_found():
     kwargs = {
         "litellm_params": {

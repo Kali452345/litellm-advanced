@@ -3,8 +3,9 @@ Tests for per-credential quota routing (router_settings.enable_quota_routing).
 
 When enabled, `rpm` / `rpd` on a deployment become hard caps rather than shuffle
 weights: a credential with nothing left in the current window is dropped before
-routing picks a deployment, and the winner's slot is reserved before the request
-goes out.
+routing picks a deployment, the surviving pool is walked fullest credential
+first so a conversation keeps landing on the same key, and the winner's slot is
+reserved before the request goes out.
 """
 
 import asyncio
@@ -13,8 +14,10 @@ from collections import Counter
 
 import pytest
 
+import litellm
 from litellm import Router
 from litellm.exceptions import APIConnectionError, RateLimitError
+from litellm.integrations.custom_logger import CustomLogger
 from litellm.router_utils.cooldown_handlers import _async_get_cooldown_deployments
 from litellm.types.router import RouterRateLimitError
 
@@ -22,6 +25,25 @@ MODEL = "gemini/gemini-2.5-flash"
 NEVER_HELD = 0.0
 NEVER_LANDED = APIConnectionError(message="connection refused", llm_provider="gemini", model=MODEL)
 PROVIDER_429 = RateLimitError(message="quota exceeded", llm_provider="gemini", model=MODEL)
+
+
+class PinsToTheFirstCandidate(CustomLogger):
+    """Stands in for the affinity and prompt-caching filters, which narrow the group to one deployment."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.offered: list[tuple[str, ...]] = []
+
+    async def async_filter_deployments(
+        self,
+        model: str,
+        healthy_deployments: list,
+        messages: list | None,
+        request_kwargs: dict | None = None,
+        parent_otel_span: object | None = None,
+    ) -> list[dict]:
+        self.offered.append(tuple(candidate["model_info"]["id"] for candidate in healthy_deployments))
+        return healthy_deployments[:1]
 
 
 def deployment(dep_id: str, *, api_key: str, model_name: str = "group", **litellm_params: object) -> dict:
@@ -82,6 +104,40 @@ async def test_quota_filtering_runs_before_order_so_a_spent_tier_hands_off():
     assert picks == ["primary", "primary", "secondary", "secondary"], (
         "order must keep a request on one key until that key is spent, then drain the next tier"
     )
+    with pytest.raises(RouterRateLimitError):
+        await selected_id(router)
+
+
+async def test_a_pool_is_drained_one_credential_at_a_time_rather_than_shuffled():
+    router = quota_router(
+        deployment("d1", api_key="k1", rpm=5),
+        deployment("d2", api_key="k2", rpm=5),
+        deployment("d3", api_key="k3", rpm=5),
+    )
+
+    picks = [await selected_id(router) for _ in range(12)]
+
+    assert picks == ["d1"] * 5 + ["d2"] * 5 + ["d3"] * 2, (
+        "a conversation only hits the provider's prompt cache while it keeps landing on the same "
+        "key, so the pool drains one credential before it touches the next"
+    )
+
+
+async def test_a_pin_on_the_first_candidate_is_never_offered_a_spent_credential(monkeypatch: pytest.MonkeyPatch):
+    pin = PinsToTheFirstCandidate()
+    monkeypatch.setattr(litellm, "callbacks", [pin])
+    router = quota_router(
+        deployment("d1", api_key="k1", rpm=1),
+        deployment("d2", api_key="k2", rpm=1),
+    )
+
+    assert await selected_id(router) == "d1"
+    assert await selected_id(router) == "d2", (
+        "a filter that narrows the group to one deployment has to be handed the keys that still "
+        "have room, or it pins the spent one and the quota filter then empties the group"
+    )
+
+    assert pin.offered == [("d1", "d2"), ("d2",)]
     with pytest.raises(RouterRateLimitError):
         await selected_id(router)
 

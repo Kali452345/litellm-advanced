@@ -3,11 +3,11 @@ Quota enforcement for router deployment selection.
 
 Two hooks, deliberately asymmetric:
 
-- The read side, `availability` and the `candidates_with_capacity` wrapper that
-  selection calls, is advisory. It reads every candidate's counters in one round
-  trip so selection never lands on a key whose minute or day allowance is already
-  spent. Two concurrent requests can both pass it with one slot left, which is
-  fine, because it decides nothing on its own.
+- The read side, `availability` and `most_spent_first`, is advisory. Each reads
+  every candidate's counters in one round trip, so selection can drop the keys
+  whose minute or day allowance is already spent and rank what is left. Two
+  concurrent requests can both pass it with one slot left, which is fine,
+  because it decides nothing on its own.
 - `reserve_first_available` is the authority. It consumes the allowance
   atomically for the deployment that selection landed on, and when a concurrent
   request took the last slot it falls forward to another candidate instead of
@@ -56,6 +56,8 @@ _STRATEGIES_WITHOUT_QUOTA_ENFORCEMENT: Final = frozenset({"usage-based-routing",
 
 _HOLD_PAD_SECONDS: Final = 0.25
 _HOLD_JITTER_SECONDS: Final = 0.5
+
+_UNMETERED_RATIO: Final = -1.0
 
 
 class _QuotaLitellmParams(BaseModel):
@@ -110,7 +112,7 @@ class QuotaAvailability:
     seconds_until_reset: int | None
 
 
-_NOTHING_SPENT: Final = QuotaAvailability(exhausted_deployment_ids=frozenset(), seconds_until_reset=None)
+NOTHING_SPENT: Final = QuotaAvailability(exhausted_deployment_ids=frozenset(), seconds_until_reset=None)
 
 
 def _utc_now() -> dt.datetime:
@@ -150,7 +152,7 @@ class QuotaEnforcer:
         """
         quotas: Final = self._candidate_quotas(deployments)
         if not quotas:
-            return _NOTHING_SPENT
+            return NOTHING_SPENT
         counts: Final = await self._counter.peek(
             tuple(descriptor.key for quota in quotas for descriptor in quota.descriptors)
         )
@@ -203,29 +205,29 @@ class QuotaEnforcer:
         await self._sleep(first.seconds_until_reset + _HOLD_PAD_SECONDS + random.uniform(0, _HOLD_JITTER_SECONDS))
         return await self.availability(deployments)
 
-    async def candidates_with_capacity(
-        self,
-        deployments: Sequence[_DeploymentT],
-        *,
-        max_wait_seconds: float | None = None,
-    ) -> tuple[tuple[_DeploymentT, ...], int | None]:
+    async def most_spent_first(self, deployments: Sequence[_DeploymentT]) -> tuple[_DeploymentT, ...]:
         """
-        The candidates that still have room, and when the pool frees up if none do.
+        The candidates ordered by how much of their allowance is gone, fullest first.
 
-        The second value is set only when nothing is left, which is what the caller
-        reports as its retry-after.
+        Stickiness, not fairness. A pool of free keys drains one credential before
+        it touches the next, so a conversation keeps landing on the same key and the
+        provider's prompt cache keeps hitting. Least-used-first is round robin,
+        which cold-misses that cache on every request.
+
+        A candidate scores on its worst window, so a key at 4/5 for the minute
+        outranks one that has spent half of its day. Deployments with no quota
+        configured score below every metered one and sort last, which leaves them
+        as the overflow the pool spills into.
         """
-        quota: Final = await self.wait_for_capacity(deployments, max_wait_seconds=max_wait_seconds)
-        if not quota.exhausted_deployment_ids:
-            return tuple(deployments), quota.seconds_until_reset
-        return (
-            tuple(
-                deployment
-                for deployment in deployments
-                if _deployment_id(deployment) not in quota.exhausted_deployment_ids
-            ),
-            quota.seconds_until_reset,
+        now: Final = self._clock()
+        descriptors: Final = tuple(self._descriptors_for(deployment, now) for deployment in deployments)
+        counts: Final = await self._counter.peek(tuple(descriptor.key for group in descriptors for descriptor in group))
+        ranked: Final = sorted(
+            range(len(deployments)),
+            key=lambda index: _spent_ratio(descriptors[index], counts),
+            reverse=True,
         )
+        return tuple(deployments[index] for index in ranked)
 
     async def reserve_first_available(
         self,
@@ -355,9 +357,21 @@ def _parse_deployment(deployment: Mapping[str, object]) -> _QuotaDeploymentView 
         return None
 
 
-def _deployment_id(deployment: Mapping[str, object]) -> str | None:
-    view: Final = _parse_deployment(deployment)
-    return None if view is None else view.model_info.id
+def _spent_ratio(descriptors: Sequence[QuotaDescriptor], counts: Mapping[str, int]) -> float:
+    """
+    How much of the tightest window's allowance is gone.
+
+    A deployment with nothing metered scores below any real ratio, so it ranks
+    after every metered one, and a zero limit reads as full rather than dividing
+    by it.
+    """
+    return max(
+        (
+            counts.get(descriptor.key, 0) / descriptor.limit if descriptor.limit > 0 else inf
+            for descriptor in descriptors
+        ),
+        default=_UNMETERED_RATIO,
+    )
 
 
 def _build_descriptors(

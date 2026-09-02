@@ -172,7 +172,9 @@ from litellm.router_utils.pre_call_checks.prompt_caching_deployment_check import
     PromptCachingDeploymentCheck,
 )
 from litellm.router_utils.quota import (
+    NOTHING_SPENT,
     AtomicWindowCounter,
+    QuotaAvailability,
     QuotaEnforcer,
     mark_reservation,
     read_reservation,
@@ -248,6 +250,7 @@ from litellm.utils import (
     EmbeddingResponse,
     ModelResponse,
     Rules,
+    _get_excluded_filtered_deployments,
     function_setup,
     get_llm_provider,
     get_non_default_completion_params,
@@ -1548,12 +1551,24 @@ class Router:
             case _:
                 return None
 
+    async def _sticky_rotation(self, healthy_deployments: Sequence[_DeploymentT]) -> tuple[_DeploymentT, ...] | None:
+        """
+        The order a quota pool is walked in, or None when quota routing is off.
+
+        Fullest credential first, so the pool drains one key before it moves to the
+        next and the provider's prompt cache keeps hitting. Rotation happens when a
+        key runs out of allowance, not on every request the way a weighted random
+        pick would rotate.
+        """
+        enforcer: Final = self.quota_enforcer
+        return None if enforcer is None else await enforcer.most_spent_first(healthy_deployments)
+
     async def _reserved_within_quota(
         self,
         selected: _DeploymentT | None,
         candidates: Sequence[_DeploymentT],
         *,
-        request_kwargs: Mapping[str, object] | None,
+        request_kwargs: Mapping[str, object],
     ) -> _DeploymentT | None:
         """
         Take a request slot on `selected`, or on the next candidate that has one.
@@ -11967,9 +11982,18 @@ class Router:
 
         healthy_deployments = self._filter_blocked_deployments(healthy_deployments)
 
+        ## QUOTA FILTERING ## -> drop the credentials with no rpm/rpd room left in this
+        ## window. Runs before the callback filter so a spent credential never reaches
+        ## the affinity and prompt-caching pins, and before ORDER FILTERING so a spent
+        ## order=1 key hands the group to order=2 instead of failing the request.
+        quota: Final = await self._quota_availability(healthy_deployments, request_kwargs=request_kwargs)
+        with_quota_room: Final = _get_excluded_filtered_deployments(
+            healthy_deployments, excluded_deployment_ids=quota.exhausted_deployment_ids
+        )
+
         healthy_deployments = await self.async_callback_filter_deployments(
             model=model,
-            healthy_deployments=healthy_deployments,
+            healthy_deployments=with_quota_room,
             messages=(cast(list[AllMessageValues], messages) if messages is not None else None),
             request_kwargs=request_kwargs,
             parent_otel_span=parent_otel_span,
@@ -12007,26 +12031,17 @@ class Router:
             request_kwargs=request_kwargs,
         )
 
-        ## QUOTA FILTERING ## -> drop deployments whose credential has no rpm/rpd
-        ## room left in the current window. Runs before ORDER FILTERING so a spent
-        ## order=1 key hands the group to order=2 instead of failing the request.
-        quota_filtered, quota_reset_seconds = (
-            await self._quota_filtered(healthy_deployments, request_kwargs=request_kwargs)
-            if isinstance(healthy_deployments, list)
-            else (healthy_deployments, None)
-        )
-
         ## ORDER FILTERING ## -> if user set 'order' in deployments, return deployments with lowest order (e.g. order=1 > order=2)
         _target_order: Final = (request_kwargs or {}).pop("_target_order", None)
         healthy_deployments = litellm.utils._get_order_filtered_deployments(
-            cast(list[dict], quota_filtered), target_order=_target_order
+            cast(list[dict], healthy_deployments), target_order=_target_order
         )
 
         ## WEIGHTED FAILOVER EXCLUSION ## -> drop deployments already tried in
         ## this request via weighted-failover. Always honored, regardless of the
         ## router-level flag, so a stale exclusion key on kwargs cannot escape.
         _excluded_deployment_ids: Final = (request_kwargs or {}).pop("_excluded_deployment_ids", None)
-        healthy_deployments = litellm.utils._get_excluded_filtered_deployments(
+        healthy_deployments = _get_excluded_filtered_deployments(
             cast(list[dict], healthy_deployments),
             excluded_deployment_ids=_excluded_deployment_ids,
         )
@@ -12036,30 +12051,30 @@ class Router:
                 litellm_router_instance=self,
                 model=model,
                 parent_otel_span=parent_otel_span,
-                quota_reset_seconds=quota_reset_seconds,
+                quota_reset_seconds=quota.seconds_until_reset,
             )
             raise exception
 
         return healthy_deployments
 
-    async def _quota_filtered(
-        self, healthy_deployments: Sequence[_DeploymentT], *, request_kwargs: Mapping[str, object] | None
-    ) -> tuple[Sequence[_DeploymentT], int | None]:
+    async def _quota_availability(
+        self, healthy_deployments: Sequence[Mapping[str, object]], *, request_kwargs: Mapping[str, object] | None
+    ) -> QuotaAvailability:
         """
-        Drop the credentials that are spent, holding the request when the whole pool
-        is out and the window rolls over in seconds.
+        Which of these credentials are spent, holding the request when the whole pool
+        is out and its window rolls over in seconds.
 
-        Returns what is left, plus the second the pool frees up when nothing is
-        left, which is what the caller reports as its retry-after.
+        The hold is capped by the caller's own timeout, since sleeping past the
+        deadline it will give up on only wastes the wait.
         """
         enforcer: Final = self.quota_enforcer
         if enforcer is None:
-            return healthy_deployments, None
+            return NOTHING_SPENT
         timeout: Final = None if request_kwargs is None else request_kwargs.get("timeout")
         client_deadline: Final = (
             float(timeout) if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) else None
         )
-        return await enforcer.candidates_with_capacity(healthy_deployments, max_wait_seconds=client_deadline)
+        return await enforcer.wait_for_capacity(healthy_deployments, max_wait_seconds=client_deadline)
 
     @staticmethod
     def _pop_effort_from_nested_carrier(request_kwargs: dict[str, object], carrier: str) -> None:
@@ -12162,9 +12177,15 @@ class Router:
 
             start_time: Final = time.time()
             if strategy == "simple-shuffle":
+                rotation: Final = await self._sticky_rotation(healthy_deployments)
+                picked: Final = (
+                    rotation[0]
+                    if rotation
+                    else simple_shuffle(llm_router_instance=self, healthy_deployments=healthy_deployments, model=model)
+                )
                 reserved: Final = await self._reserved_within_quota(
-                    simple_shuffle(llm_router_instance=self, healthy_deployments=healthy_deployments, model=model),
-                    healthy_deployments,
+                    picked,
+                    rotation or healthy_deployments,
                     request_kwargs=request_kwargs,
                 )
                 if reserved is None:
@@ -12823,7 +12844,7 @@ class Router:
         ## this request via weighted-failover. See async counterpart in
         ## async_get_healthy_deployments for details.
         _excluded_deployment_ids: Final = (request_kwargs or {}).pop("_excluded_deployment_ids", None)
-        healthy_deployments = litellm.utils._get_excluded_filtered_deployments(
+        healthy_deployments = _get_excluded_filtered_deployments(
             healthy_deployments,
             excluded_deployment_ids=_excluded_deployment_ids,
         )

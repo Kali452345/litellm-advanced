@@ -9,6 +9,7 @@ from litellm.router_utils.quota.counter import (
     build_descriptors,
 )
 from litellm.router_utils.quota.enforcement import (
+    NOTHING_SPENT,
     QuotaAvailability,
     QuotaEnforcer,
     warn_on_unenforced_quotas,
@@ -40,6 +41,7 @@ from litellm.router_utils.quota.window import (
 __all__ = (
     "DEFAULT_QUOTA_SCOPE_MODE",
     "DEFAULT_QUOTA_TIMEZONE",
+    "NOTHING_SPENT",
     "QUOTA_RESERVED_AT_KEY",
     "AtomicWindowCounter",
     "QuotaAvailability",

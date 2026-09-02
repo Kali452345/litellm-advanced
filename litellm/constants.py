@@ -36,6 +36,8 @@ QUOTA_COUNTER_KEY_PREFIX: Final = "litellm_quota"
 # The window label is part of the counter key, so holding a stale key longer is free,
 # while expiring one early against a lagging clock would over-issue requests.
 QUOTA_COUNTER_TTL_GRACE_SECONDS: Final = int(os.getenv("QUOTA_COUNTER_TTL_GRACE_SECONDS", "10"))
+# Long enough for a minute window to roll over, short enough that a day window never does.
+DEFAULT_QUOTA_MAX_WAIT_SECONDS: Final = float(os.getenv("DEFAULT_QUOTA_MAX_WAIT_SECONDS", "75"))
 DEFAULT_REPLICATE_POLLING_RETRIES: Final = int(os.getenv("DEFAULT_REPLICATE_POLLING_RETRIES", 5))
 DEFAULT_REPLICATE_POLLING_DELAY_SECONDS: Final = int(os.getenv("DEFAULT_REPLICATE_POLLING_DELAY_SECONDS", 1))
 DEFAULT_IMAGE_TOKEN_COUNT: Final = int(os.getenv("DEFAULT_IMAGE_TOKEN_COUNT", 250))

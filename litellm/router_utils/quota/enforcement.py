@@ -3,29 +3,38 @@ Quota enforcement for router deployment selection.
 
 Two hooks, deliberately asymmetric:
 
-- `exhausted_deployment_ids` is advisory. It reads every candidate's counters in
-  one round trip so selection never lands on a key whose minute or day allowance
-  is already spent. Two concurrent requests can both pass it with one slot left,
-  which is fine, because it decides nothing on its own.
+- The read side, `availability` and the `candidates_with_capacity` wrapper that
+  selection calls, is advisory. It reads every candidate's counters in one round
+  trip so selection never lands on a key whose minute or day allowance is already
+  spent. Two concurrent requests can both pass it with one slot left, which is
+  fine, because it decides nothing on its own.
 - `reserve_first_available` is the authority. It consumes the allowance
   atomically for the deployment that selection landed on, and when a concurrent
   request took the last slot it falls forward to another candidate instead of
   failing the request.
 
-A key at its per-minute cap is healthy, so neither hook touches cooldown state.
+`wait_for_capacity` and `refund_reservation` are what keep a spent pool from
+turning into an error the caller has to handle: one waits out a window that rolls
+over in seconds, the other gives back a slot the request never spent.
+
+A key at its per-minute cap is healthy, so none of this touches cooldown state.
 Cooling it down would key on `model_info.id` and leave a credential's other
 deployments hammering the same spent key, and it would hold the key out of
 rotation for `cooldown_time` rather than until the window rolls over.
 """
 
+import asyncio
 import datetime as dt
-from collections.abc import Callable, Mapping, Sequence
+import random
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from math import inf
 from typing import Final, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from litellm._logging import verbose_router_logger
+from litellm.constants import DEFAULT_QUOTA_MAX_WAIT_SECONDS
 from litellm.router_utils.quota.counter import (
     AtomicWindowCounter,
     QuotaDescriptor,
@@ -44,6 +53,9 @@ _QUOTA_PARAM_NAMES: Final = ("rpd", "quota_scope", "quota_scope_id", "quota_rese
 # Strategies `Router.async_get_available_deployment` hands off to the sync path,
 # which has no reservation step. Anything not listed here reaches the async path.
 _STRATEGIES_WITHOUT_QUOTA_ENFORCEMENT: Final = frozenset({"usage-based-routing", "lar1"})
+
+_HOLD_PAD_SECONDS: Final = 0.25
+_HOLD_JITTER_SECONDS: Final = 0.5
 
 
 class _QuotaLitellmParams(BaseModel):
@@ -83,8 +95,30 @@ class _CandidateQuota:
     descriptors: tuple[QuotaDescriptor, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class QuotaAvailability:
+    """
+    What selection has to skip, and when the pool gets capacity back.
+
+    `seconds_until_reset` is set only when every candidate is spent, the one case
+    where waiting or reporting a retry-after is honest. It is the soonest second any
+    one of them frees up, so a key blocked on both its minute and its day cap
+    reports the day boundary rather than the minute it cannot use.
+    """
+
+    exhausted_deployment_ids: frozenset[str]
+    seconds_until_reset: int | None
+
+
+_NOTHING_SPENT: Final = QuotaAvailability(exhausted_deployment_ids=frozenset(), seconds_until_reset=None)
+
+
 def _utc_now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
+
+
+async def _asyncio_sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
 
 
 class QuotaEnforcer:
@@ -93,30 +127,104 @@ class QuotaEnforcer:
         counter: AtomicWindowCounter,
         *,
         default_scope_mode: QuotaScopeMode = DEFAULT_QUOTA_SCOPE_MODE,
+        max_wait_seconds: float = DEFAULT_QUOTA_MAX_WAIT_SECONDS,
         clock: Callable[[], dt.datetime] = _utc_now,
+        sleep: Callable[[float], Awaitable[None]] = _asyncio_sleep,
     ) -> None:
         self._counter: Final = counter
         self._default_scope_mode: Final = default_scope_mode
+        self._max_wait_seconds: Final = max_wait_seconds
         self._clock: Final = clock
+        self._sleep: Final = sleep
 
-    async def exhausted_deployment_ids(self, deployments: Sequence[Mapping[str, object]]) -> frozenset[str]:
+    def now(self) -> dt.datetime:
+        """The clock the counters are keyed on, for a caller that has to stamp a reservation."""
+        return self._clock()
+
+    async def availability(self, deployments: Sequence[Mapping[str, object]]) -> QuotaAvailability:
         """
-        Ids of the deployments that have no room left for another request.
+        Which deployments have no room left for another request.
 
         One batched read covers the whole candidate list, so the cost is a single
         round trip no matter how many keys a model group fans out to.
         """
         quotas: Final = self._candidate_quotas(deployments)
         if not quotas:
-            return frozenset()
+            return _NOTHING_SPENT
         counts: Final = await self._counter.peek(
             tuple(descriptor.key for quota in quotas for descriptor in quota.descriptors)
         )
-        return frozenset(
-            quota.deployment_id
+        blocked: Final = tuple(
+            (
+                quota.deployment_id,
+                tuple(
+                    descriptor.window.seconds_until_reset
+                    for descriptor in quota.descriptors
+                    if counts.get(descriptor.key, 0) >= descriptor.limit
+                ),
+            )
             for quota in quotas
-            if quota.deployment_id is not None
-            and any(counts.get(descriptor.key, 0) >= descriptor.limit for descriptor in quota.descriptors)
+        )
+        exhausted: Final = frozenset(
+            deployment_id for deployment_id, resets in blocked if resets and deployment_id is not None
+        )
+        return QuotaAvailability(
+            exhausted_deployment_ids=exhausted,
+            seconds_until_reset=(
+                min(max(resets) for _, resets in blocked if resets) if len(exhausted) == len(deployments) else None
+            ),
+        )
+
+    async def wait_for_capacity(
+        self,
+        deployments: Sequence[Mapping[str, object]],
+        *,
+        max_wait_seconds: float | None = None,
+    ) -> QuotaAvailability:
+        """
+        Availability, waiting out a window that rolls over in seconds.
+
+        A pool that is spent for the next few seconds is a wait rather than a
+        failure: the harness driving this router cannot see a slightly slower
+        response, and it very much can see a 429. One hold is enough, because the
+        boundary the sleep lands past is where every minute counter starts over. A
+        day cap never resolves inside the budget, so it falls straight through and
+        the caller fails fast. The jitter keeps a burst of held requests from
+        hitting the counters in the same instant.
+        """
+        first: Final = await self.availability(deployments)
+        budget: Final = min(self._max_wait_seconds, inf if max_wait_seconds is None else max_wait_seconds)
+        if first.seconds_until_reset is None or first.seconds_until_reset > budget:
+            return first
+        verbose_router_logger.info(
+            "Every candidate is at its quota, holding this request %ss for the window to roll over",
+            first.seconds_until_reset,
+        )
+        await self._sleep(first.seconds_until_reset + _HOLD_PAD_SECONDS + random.uniform(0, _HOLD_JITTER_SECONDS))
+        return await self.availability(deployments)
+
+    async def candidates_with_capacity(
+        self,
+        deployments: Sequence[_DeploymentT],
+        *,
+        max_wait_seconds: float | None = None,
+    ) -> tuple[tuple[_DeploymentT, ...], int | None]:
+        """
+        The candidates that still have room, and when the pool frees up if none do.
+
+        The second value is set only when nothing is left, which is what the caller
+        reports as its retry-after.
+        """
+        quota: Final = await self.wait_for_capacity(deployments, max_wait_seconds=max_wait_seconds)
+        if not quota.exhausted_deployment_ids:
+            return tuple(deployments), quota.seconds_until_reset
+        return (
+            tuple(
+                deployment
+                for deployment in deployments
+                if _deployment_id(deployment) not in quota.exhausted_deployment_ids
+            ),
+            quota.seconds_until_reset,
         )
 
     async def reserve_first_available(
@@ -144,6 +252,15 @@ class QuotaEnforcer:
                         blocked.limit,
                     )
         return None
+
+    async def refund_reservation(self, deployment: Mapping[str, object], *, reserved_at: dt.datetime) -> None:
+        """
+        Give back a slot the request took and never spent.
+
+        The windows come from `reserved_at` rather than from now, so a request that
+        fails after the minute rolled over credits the window it actually charged.
+        """
+        await self._counter.refund(self._descriptors_for(deployment, reserved_at))
 
     def _candidate_quotas(self, deployments: Sequence[Mapping[str, object]]) -> tuple[_CandidateQuota, ...]:
         now: Final = self._clock()
@@ -236,6 +353,11 @@ def _parse_deployment(deployment: Mapping[str, object]) -> _QuotaDeploymentView 
             tuple(error["loc"] for error in e.errors(include_input=False, include_url=False)),
         )
         return None
+
+
+def _deployment_id(deployment: Mapping[str, object]) -> str | None:
+    view: Final = _parse_deployment(deployment)
+    return None if view is None else view.model_info.id
 
 
 def _build_descriptors(

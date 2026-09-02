@@ -11,6 +11,8 @@ from litellm.router_utils.quota.enforcement import QuotaEnforcer, warn_on_unenfo
 NOW = dt.datetime(2026, 9, 1, 14, 32, 30, tzinfo=dt.timezone.utc)
 LOS_ANGELES = "America/Los_Angeles"
 ROUTER_LOGGER = "LiteLLM Router"
+SECONDS_TO_NEXT_MINUTE = 30
+SECONDS_TO_NEXT_UTC_DAY = 34050
 
 
 class Clock:
@@ -24,6 +26,20 @@ class Clock:
 
     def advance(self, **delta: float) -> None:
         self.now += dt.timedelta(**delta)
+
+
+class FakeSleep:
+    """A sleep that moves the clock instead of the wall, and records what it was asked to wait."""
+
+    def __init__(self, clock: Clock, *, moves_clock: bool = True) -> None:
+        self.clock = clock
+        self.moves_clock = moves_clock
+        self.waits: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.waits.append(seconds)
+        if self.moves_clock:
+            self.clock.advance(seconds=seconds)
 
 
 def deployment(
@@ -50,8 +66,12 @@ def deployment(
     }
 
 
-def enforcer(clock: Clock | None = None) -> QuotaEnforcer:
-    return QuotaEnforcer(AtomicWindowCounter(DualCache()), clock=clock or Clock())
+def enforcer(clock: Clock | None = None, **kwargs: object) -> QuotaEnforcer:
+    return QuotaEnforcer(AtomicWindowCounter(DualCache()), clock=clock or Clock(), **kwargs)
+
+
+async def exhausted(subject: QuotaEnforcer, pool: list[dict]) -> frozenset[str]:
+    return (await subject.availability(pool)).exhausted_deployment_ids
 
 
 def quota_records(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -65,18 +85,18 @@ async def test_a_deployment_without_limits_is_never_exhausted():
     for _ in range(5):
         assert await subject.reserve_first_available(pool[0], pool) is pool[0]
 
-    assert await subject.exhausted_deployment_ids(pool) == frozenset()
+    assert await exhausted(subject, pool) == frozenset()
 
 
 async def test_a_deployment_is_reported_exhausted_only_once_its_limit_is_reached():
     subject = enforcer()
     pool = [deployment("d1", rpm=2)]
 
-    assert await subject.exhausted_deployment_ids(pool) == frozenset()
+    assert await exhausted(subject, pool) == frozenset()
     await subject.reserve_first_available(pool[0], pool)
-    assert await subject.exhausted_deployment_ids(pool) == frozenset(), "one of two requests spent is not exhausted"
+    assert await exhausted(subject, pool) == frozenset(), "one of two requests spent is not exhausted"
     await subject.reserve_first_available(pool[0], pool)
-    assert await subject.exhausted_deployment_ids(pool) == {"d1"}
+    assert await exhausted(subject, pool) == {"d1"}
 
 
 async def test_reservation_falls_forward_to_the_next_candidate():
@@ -94,7 +114,7 @@ async def test_the_selected_candidate_is_charged_whatever_its_position():
 
     assert await subject.reserve_first_available(pool[1], pool) is pool[1]
 
-    assert await subject.exhausted_deployment_ids(pool) == {"d2"}, (
+    assert await exhausted(subject, pool) == {"d2"}, (
         "the reservation must land on the deployment selection chose, not on the first candidate"
     )
 
@@ -137,7 +157,7 @@ async def test_one_credential_serving_two_models_shares_one_allowance():
     assert await subject.reserve_first_available(pool[1], pool) is None, (
         "quota_scope='credential' must meter the key once, not once per model"
     )
-    assert await subject.exhausted_deployment_ids(pool) == {"d1", "d2"}
+    assert await exhausted(subject, pool) == {"d1", "d2"}
 
 
 async def test_the_default_scope_meters_each_model_of_a_credential_separately():
@@ -149,7 +169,7 @@ async def test_the_default_scope_meters_each_model_of_a_credential_separately():
 
     assert await subject.reserve_first_available(pool[0], pool) is pool[0]
     assert await subject.reserve_first_available(pool[1], pool) is pool[1]
-    assert await subject.exhausted_deployment_ids(pool) == {"d1", "d2"}
+    assert await exhausted(subject, pool) == {"d1", "d2"}
 
 
 async def test_two_deployments_of_one_credential_and_model_share_one_allowance():
@@ -187,7 +207,7 @@ async def test_a_daily_cap_holds_across_minutes():
     assert await subject.reserve_first_available(pool[0], pool) is pool[0]
 
     assert await subject.reserve_first_available(pool[0], pool) is None, "a new minute must not refill the day"
-    assert await subject.exhausted_deployment_ids(pool) == {"d1"}
+    assert await exhausted(subject, pool) == {"d1"}
 
 
 async def test_a_daily_cap_resets_on_the_configured_zone_s_day_boundary():
@@ -249,7 +269,7 @@ async def test_an_unreadable_limit_fails_open(caplog: pytest.LogCaptureFixture):
     with caplog.at_level(logging.ERROR, logger=ROUTER_LOGGER):
         for _ in range(3):
             assert await subject.reserve_first_available(pool[0], pool) is pool[0]
-        assert await subject.exhausted_deployment_ids(pool) == frozenset()
+        assert await exhausted(subject, pool) == frozenset()
 
     assert any("unreadable field(s)" in message for message in quota_records(caplog))
 
@@ -265,7 +285,7 @@ async def test_a_validation_failure_never_logs_the_offending_value(caplog: pytes
     ]
 
     with caplog.at_level(logging.ERROR, logger=ROUTER_LOGGER):
-        await subject.exhausted_deployment_ids(pool)
+        await exhausted(subject, pool)
 
     logged = " ".join(quota_records(caplog))
     assert "sk-must-not-be-logged" not in logged
@@ -328,3 +348,182 @@ def test_a_supported_strategy_does_not_warn(strategy: str, caplog: pytest.LogCap
         )
 
     assert quota_records(caplog) == []
+
+
+async def test_a_pool_that_is_out_for_seconds_is_waited_out():
+    clock = Clock()
+    sleeping = FakeSleep(clock)
+    subject = enforcer(clock, sleep=sleeping)
+    pool = [deployment("d1", api_key="k1", rpm=1), deployment("d2", api_key="k2", rpm=1)]
+
+    for _ in range(2):
+        assert await subject.reserve_first_available(pool[0], pool) is not None
+
+    held = await subject.wait_for_capacity(pool)
+
+    assert sleeping.waits == [pytest.approx(SECONDS_TO_NEXT_MINUTE, abs=1)], (
+        "a fully spent pool whose minute rolls over in seconds must wait for it, not fail the request"
+    )
+    assert held.exhausted_deployment_ids == frozenset()
+    assert held.seconds_until_reset is None
+
+
+async def test_a_pool_with_room_left_is_never_waited_out():
+    clock = Clock()
+    sleeping = FakeSleep(clock)
+    subject = enforcer(clock, sleep=sleeping)
+    pool = [deployment("d1", api_key="k1", rpm=1), deployment("d2", api_key="k2", rpm=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+
+    availability = await subject.wait_for_capacity(pool)
+
+    assert sleeping.waits == []
+    assert availability.exhausted_deployment_ids == {"d1"}
+    assert availability.seconds_until_reset is None, "one spent key out of two is nothing to wait for"
+
+
+async def test_a_day_cap_is_reported_rather_than_waited_out():
+    clock = Clock()
+    sleeping = FakeSleep(clock)
+    subject = enforcer(clock, sleep=sleeping)
+    pool = [deployment("d1", rpd=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+
+    availability = await subject.wait_for_capacity(pool)
+
+    assert sleeping.waits == [], "no request may be held for hours waiting on a day boundary"
+    assert availability.exhausted_deployment_ids == {"d1"}
+    assert availability.seconds_until_reset == SECONDS_TO_NEXT_UTC_DAY
+
+
+async def test_the_caller_s_own_deadline_caps_the_hold():
+    clock = Clock()
+    sleeping = FakeSleep(clock)
+    subject = enforcer(clock, sleep=sleeping)
+    pool = [deployment("d1", rpm=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+
+    availability = await subject.wait_for_capacity(pool, max_wait_seconds=5)
+
+    assert sleeping.waits == [], "holding 30s for a caller who times out in 5 only wastes the wait"
+    assert availability.seconds_until_reset == SECONDS_TO_NEXT_MINUTE
+
+
+async def test_the_configured_ceiling_caps_the_hold():
+    clock = Clock()
+    sleeping = FakeSleep(clock)
+    subject = enforcer(clock, sleep=sleeping, max_wait_seconds=5)
+    pool = [deployment("d1", rpm=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+
+    availability = await subject.wait_for_capacity(pool)
+
+    assert sleeping.waits == []
+    assert availability.seconds_until_reset == SECONDS_TO_NEXT_MINUTE
+
+
+async def test_capacity_that_never_arrives_is_reported_after_one_hold():
+    clock = Clock()
+    sleeping = FakeSleep(clock, moves_clock=False)
+    subject = enforcer(clock, sleep=sleeping)
+    pool = [deployment("d1", rpm=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+
+    availability = await subject.wait_for_capacity(pool)
+
+    assert len(sleeping.waits) == 1, "one hold per request, so a stuck window cannot pin a request forever"
+    assert availability.exhausted_deployment_ids == {"d1"}
+    assert availability.seconds_until_reset == SECONDS_TO_NEXT_MINUTE
+
+
+async def test_selection_only_sees_the_candidates_with_room_left():
+    subject = enforcer()
+    spent = deployment("spent", api_key="k1", rpm=1)
+    open_key = deployment("open", api_key="k2", rpm=1)
+    uncapped = deployment("uncapped", api_key="k3")
+    pool = [spent, open_key, uncapped]
+
+    assert await subject.reserve_first_available(spent, [spent]) is spent
+
+    candidates, reset_seconds = await subject.candidates_with_capacity(pool)
+
+    assert candidates == (open_key, uncapped), "a spent key must be gone before selection weighs the pool"
+    assert reset_seconds is None, "there is room left, so there is nothing to report a retry-after for"
+
+
+async def test_a_pool_with_nothing_left_yields_no_candidates_and_a_retry_after():
+    clock = Clock()
+    subject = enforcer(clock, sleep=FakeSleep(clock, moves_clock=False))
+    pool = [deployment("d1", api_key="k1", rpm=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+
+    candidates, reset_seconds = await subject.candidates_with_capacity(pool)
+
+    assert candidates == ()
+    assert reset_seconds == SECONDS_TO_NEXT_MINUTE, (
+        "a caller left with nothing has to be told the second the pool frees up, or it retries blind"
+    )
+
+
+async def test_a_refund_gives_the_slot_back():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+    assert await subject.reserve_first_available(pool[0], pool) is None
+
+    await subject.refund_reservation(pool[0], reserved_at=NOW)
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0], (
+        "a request that never reached the provider must not cost the credential a slot"
+    )
+
+
+async def test_a_refund_credits_the_window_the_request_charged():
+    clock = Clock()
+    subject = enforcer(clock)
+    pool = [deployment("d1", rpm=1)]
+    charged_at = clock.now
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+    clock.advance(minutes=1)
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+
+    await subject.refund_reservation(pool[0], reserved_at=charged_at)
+
+    assert await subject.reserve_first_available(pool[0], pool) is None, (
+        "refunding against the current minute would credit the window the retry is spending"
+    )
+
+
+async def test_a_refund_gives_back_every_window_the_request_charged():
+    clock = Clock()
+    subject = enforcer(clock)
+    pool = [deployment("d1", rpm=2, rpd=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+    await subject.refund_reservation(pool[0], reserved_at=clock.now)
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0], (
+        "the day counter stayed charged, so a refund only healed the minute"
+    )
+
+
+async def test_repeated_refunds_cannot_mint_capacity():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=1)]
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+    for _ in range(3):
+        await subject.refund_reservation(pool[0], reserved_at=NOW)
+
+    assert await subject.reserve_first_available(pool[0], pool) is pool[0]
+    assert await subject.reserve_first_available(pool[0], pool) is None, (
+        "refunds must floor at zero, or a retried failure callback hands out free slots"
+    )

@@ -50,6 +50,7 @@ from litellm.constants import (
     DEFAULT_HEALTH_CHECK_INTERVAL,
     DEFAULT_HEALTH_CHECK_STALENESS_MULTIPLIER,
     DEFAULT_MAX_LRU_CACHE_SIZE,
+    DEFAULT_QUOTA_MAX_WAIT_SECONDS,
     SESSION_DEPLOYMENT_AFFINITY_TTL_METADATA_KEY,
 )
 from litellm.integrations.custom_logger import CustomLogger
@@ -173,6 +174,9 @@ from litellm.router_utils.pre_call_checks.prompt_caching_deployment_check import
 from litellm.router_utils.quota import (
     AtomicWindowCounter,
     QuotaEnforcer,
+    mark_reservation,
+    read_reservation,
+    request_never_reached_provider,
     warn_on_unenforced_quotas,
 )
 from litellm.router_utils.reasoning_effort_capability import (
@@ -646,6 +650,7 @@ class Router:
         enable_weighted_failover: bool = False,
         fallback_access_check: FallbackAccessCheck | None = None,
         enable_quota_routing: bool = False,
+        quota_max_wait_seconds: float = DEFAULT_QUOTA_MAX_WAIT_SECONDS,
     ) -> None:
         """
         Initialize the Router class with the given parameters for caching, reliability, and routing strategy.
@@ -684,6 +689,7 @@ class Router:
             enable_weighted_failover (bool): When True and the routing strategy is "simple-shuffle", a retryable failure on one deployment causes the request to re-pick (weighted) across the other deployments in the same model group before any cross-group fallback runs. Bounded by `max_fallbacks`. Async-only: currently honored by `router.acompletion()` and other async entrypoints. The sync `router.completion()` path falls back to the regular fallback flow. Defaults to False.
             fallback_access_check (Optional[FallbackAccessCheck]): Awaited before each cross-model-group fallback attempt on the async path; a fallback target it rejects is skipped. Defaults to None (every configured fallback is attempted).
             enable_quota_routing (bool): When True, `rpm` and `rpd` on a deployment become hard per-credential caps: a deployment with no allowance left in the current minute or local day is dropped before routing picks one, and the winner's slot is reserved atomically before the request goes out. Counters key on the credential, not the deployment, so one key serving several models shares one allowance. Async-only, and skipped by the routing strategies that select on the sync path ("usage-based-routing", "lar1"). Defaults to False, which leaves `rpm` as the simple-shuffle weight it has always been.
+            quota_max_wait_seconds (float): How long a request may be held when `enable_quota_routing` is on and every candidate credential is spent. The wait is capped again by the client's own `timeout` when that is sooner, and it happens outside the per-deployment semaphore. Defaults to 75, which lets a minute window roll over while a day cap still fails fast. Set 0 to never hold.
         Returns:
             Router: An instance of the litellm.Router class.
 
@@ -785,7 +791,9 @@ class Router:
             redis_cache=redis_cache, in_memory_cache=InMemoryCache()
         )  # use a dual cache (Redis+In-Memory) for tracking cooldowns, usage, etc.
         self.quota_enforcer: QuotaEnforcer | None = (
-            QuotaEnforcer(AtomicWindowCounter(self.cache)) if enable_quota_routing else None
+            QuotaEnforcer(AtomicWindowCounter(self.cache), max_wait_seconds=quota_max_wait_seconds)
+            if enable_quota_routing
+            else None
         )
 
         ### SCHEDULER ###
@@ -1544,6 +1552,8 @@ class Router:
         self,
         selected: _DeploymentT | None,
         candidates: Sequence[_DeploymentT],
+        *,
+        request_kwargs: Mapping[str, object] | None,
     ) -> _DeploymentT | None:
         """
         Take a request slot on `selected`, or on the next candidate that has one.
@@ -1553,10 +1563,41 @@ class Router:
         requests can both pick the key with one slot left, and only one of them
         gets it. The loser lands on another key instead of failing, so a shared
         free tier degrades into rotation rather than into 429s.
+
+        The granted slot is stamped onto the request so its failure callback can
+        hand the slot back if the call never reaches the provider.
         """
         if self.quota_enforcer is None or selected is None:
             return selected
-        return await self.quota_enforcer.reserve_first_available(selected, candidates)
+        reserved_at: Final = self.quota_enforcer.now()
+        reserved: Final = await self.quota_enforcer.reserve_first_available(selected, candidates)
+        if reserved is not None:
+            mark_reservation(request_kwargs, reserved_at=reserved_at)
+        return reserved
+
+    async def _quota_reset_seconds(self, candidates: Sequence[Mapping[str, object]]) -> int | None:
+        """When the whole pool is spent, the second it frees up, for the retry-after."""
+        enforcer: Final = self.quota_enforcer
+        return None if enforcer is None else (await enforcer.availability(candidates)).seconds_until_reset
+
+    async def _refund_quota_reservation(self, kwargs: Mapping[str, object]) -> None:
+        """
+        Hand back the slot a request reserved but never spent.
+
+        The marker on the request is what says a slot was taken, and when, so the
+        selection paths that never reserve cannot give away capacity the pool does
+        not have.
+        """
+        enforcer: Final = self.quota_enforcer
+        if enforcer is None or not request_never_reached_provider(kwargs.get("exception")):
+            return
+        reservation: Final = read_reservation(kwargs)
+        if reservation is None:
+            return
+        index: Final = self.model_id_to_deployment_index_map.get(reservation.deployment_id)
+        if index is None:
+            return
+        await enforcer.refund_reservation(self.model_list[index], reserved_at=reservation.reserved_at)
 
     def _select_deployment_sync(
         self,
@@ -7820,6 +7861,8 @@ class Router:
         """
         Update RPM usage for a deployment
         """
+        with contextlib.suppress(Exception):
+            await self._refund_quota_reservation(kwargs)
         deployment_name: Final = kwargs["litellm_params"]["metadata"].get(
             "deployment", None
         )  # handles wildcard routes - by giving the original name sent to `litellm.completion`
@@ -11967,14 +12010,10 @@ class Router:
         ## QUOTA FILTERING ## -> drop deployments whose credential has no rpm/rpd
         ## room left in the current window. Runs before ORDER FILTERING so a spent
         ## order=1 key hands the group to order=2 instead of failing the request.
-        quota_enforcer: Final = self.quota_enforcer
-        quota_filtered: Final = (
-            litellm.utils._get_excluded_filtered_deployments(
-                healthy_deployments,
-                excluded_deployment_ids=await quota_enforcer.exhausted_deployment_ids(healthy_deployments),
-            )
-            if quota_enforcer is not None and isinstance(healthy_deployments, list)
-            else healthy_deployments
+        quota_filtered, quota_reset_seconds = (
+            await self._quota_filtered(healthy_deployments, request_kwargs=request_kwargs)
+            if isinstance(healthy_deployments, list)
+            else (healthy_deployments, None)
         )
 
         ## ORDER FILTERING ## -> if user set 'order' in deployments, return deployments with lowest order (e.g. order=1 > order=2)
@@ -11997,10 +12036,30 @@ class Router:
                 litellm_router_instance=self,
                 model=model,
                 parent_otel_span=parent_otel_span,
+                quota_reset_seconds=quota_reset_seconds,
             )
             raise exception
 
         return healthy_deployments
+
+    async def _quota_filtered(
+        self, healthy_deployments: Sequence[_DeploymentT], *, request_kwargs: Mapping[str, object] | None
+    ) -> tuple[Sequence[_DeploymentT], int | None]:
+        """
+        Drop the credentials that are spent, holding the request when the whole pool
+        is out and the window rolls over in seconds.
+
+        Returns what is left, plus the second the pool frees up when nothing is
+        left, which is what the caller reports as its retry-after.
+        """
+        enforcer: Final = self.quota_enforcer
+        if enforcer is None:
+            return healthy_deployments, None
+        timeout: Final = None if request_kwargs is None else request_kwargs.get("timeout")
+        client_deadline: Final = (
+            float(timeout) if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) else None
+        )
+        return await enforcer.candidates_with_capacity(healthy_deployments, max_wait_seconds=client_deadline)
 
     @staticmethod
     def _pop_effort_from_nested_carrier(request_kwargs: dict[str, object], carrier: str) -> None:
@@ -12106,12 +12165,14 @@ class Router:
                 reserved: Final = await self._reserved_within_quota(
                     simple_shuffle(llm_router_instance=self, healthy_deployments=healthy_deployments, model=model),
                     healthy_deployments,
+                    request_kwargs=request_kwargs,
                 )
                 if reserved is None:
                     raise await async_raise_no_deployment_exception(
                         litellm_router_instance=self,
                         model=model,
                         parent_otel_span=parent_otel_span,
+                        quota_reset_seconds=await self._quota_reset_seconds(healthy_deployments),
                     )
                 return reserved
             selected: Final = await self._select_deployment_async(
@@ -12123,12 +12184,15 @@ class Router:
                 input=input,
                 request_kwargs=request_kwargs,
             )
-            deployment: Final = await self._reserved_within_quota(selected, healthy_deployments)
+            deployment: Final = await self._reserved_within_quota(
+                selected, healthy_deployments, request_kwargs=request_kwargs
+            )
             if deployment is None:
                 exception: Final = await async_raise_no_deployment_exception(
                     litellm_router_instance=self,
                     model=model,
                     parent_otel_span=parent_otel_span,
+                    quota_reset_seconds=await self._quota_reset_seconds(healthy_deployments),
                 )
                 raise exception
             verbose_router_logger.info(

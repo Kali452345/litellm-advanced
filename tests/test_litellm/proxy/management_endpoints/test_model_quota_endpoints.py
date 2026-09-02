@@ -15,7 +15,7 @@ from litellm.router_utils.quota.enforcement import DeploymentQuotaUsage, WindowU
 SECRET = "sk-model-quota-visibility"
 
 
-def deployment(dep_id: str, *, model_name: str = "group", model: str = "gemini/gemini-2.5-flash", **params) -> dict:
+def deployment(dep_id: str, *, model_name: str = "group", model: str = "gemini/gemini-3.7-flash", **params) -> dict:
     return {
         "model_name": model_name,
         "litellm_params": {"model": model, "api_key": SECRET, **params},
@@ -113,13 +113,17 @@ def test_a_key_with_no_cap_keeps_the_pool_alive():
 
 def test_a_key_is_identified_by_its_deployment_and_base_url():
     reported = derive_quota_usage(
-        deployments=[deployment("d1", model="gemini/gemini-2.5-pro", api_base="https://example.test/v1")],
+        deployments=[deployment("d1", model="gemini/gemini-3.1-pro-preview", api_base="https://example.test/v1")],
         usage=[usage("d1", minute(limit=5, used=0))],
         enforced=True,
     )
 
     key = reported.pools[0].keys[0]
-    assert (key.model_id, key.litellm_model, key.api_base) == ("d1", "gemini/gemini-2.5-pro", "https://example.test/v1")
+    assert (key.model_id, key.litellm_model, key.api_base) == (
+        "d1",
+        "gemini/gemini-3.1-pro-preview",
+        "https://example.test/v1",
+    )
 
 
 def test_a_day_window_reports_the_zone_its_boundary_is_counted_in():

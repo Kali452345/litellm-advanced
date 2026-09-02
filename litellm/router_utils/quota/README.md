@@ -22,13 +22,13 @@ router_settings:
 model_list:
   - model_name: fast
     litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-3.7-flash
       api_key: os.environ/GEMINI_KEY_ONE
       rpm: 10
       rpd: 250
   - model_name: fast
     litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-3.7-flash
       api_key: os.environ/GEMINI_KEY_TWO
       rpm: 10
       rpd: 250
@@ -111,7 +111,7 @@ curl -s -X GET 'http://0.0.0.0:4000/model/quota/usage' -H "Authorization: Bearer
       "keys": [
         {
           "model_id": "3f2c...",
-          "litellm_model": "gemini/gemini-2.5-flash",
+          "litellm_model": "gemini/gemini-3.7-flash",
           "api_base": null,
           "exhausted": true,
           "seconds_until_room": 24,
@@ -122,7 +122,7 @@ curl -s -X GET 'http://0.0.0.0:4000/model/quota/usage' -H "Authorization: Bearer
         },
         {
           "model_id": "8ab1...",
-          "litellm_model": "gemini/gemini-2.5-flash",
+          "litellm_model": "gemini/gemini-3.7-flash",
           "api_base": null,
           "exhausted": false,
           "seconds_until_room": null,

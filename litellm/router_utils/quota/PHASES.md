@@ -96,7 +96,7 @@ parameter is partially unknown. Declaring the local does not help, because pyrig
 assigned type and reports the narrowed one, and folding the filter into a helper only moves the
 diagnostic from the local onto the pool argument
 
-## Phase 5, the setup interface: the api is done, the dashboard is next
+## Phase 5, the setup interface: done
 
 `GET /provider/profiles` and `POST /provider/keys` in
 `litellm/proxy/management_endpoints/provider_profile_endpoints.py`. The first reports what each
@@ -131,8 +131,24 @@ being a bare `list` and `add_new_model` having no return annotation. Both are va
 Pydantic adapter on the spot rather than typed with `Any`, so the unknown stops at the boundary. The
 router-level `tags` needs one `# mutable-ok`, since FastAPI types that parameter as `list`
 
-Still open in this phase: the dashboard half, an rpm and rpd input plus a profile picker in
-`ui/litellm-dashboard` so a second key is a form with the shared fields already filled in
+The dashboard half is a Provider Keys tab on Models + Endpoints, one row per provider and base url,
+reporting how many keys it already has, the caps its models agree on, and whether a cap is counted per
+model or shared across the key. Add key opens a form where the only field to fill in is the key
+itself: the base url, the models and the caps arrive prefilled from the profile, so the second key is
+a paste rather than a retype. Per-model selection is there for a key that a provider has not enabled
+every model on. The response is reported per model, so a partial success names the model the provider
+refused instead of reading as a clean success, and a total failure leaves the form open with the key
+still in it
+
+Add Model grows first-class Requests Per Minute and Requests Per Day inputs, next to the LiteLLM
+Params textarea that was previously the only way to set them. The first deployment of a provider is
+what a profile is derived from, so caps typed there are what every later key inherits. They post as
+numbers rather than the strings the inputs hold, since a cap stored as `"5"` in `litellm_params` is
+JSON that the counter cannot compare against
+
+Pure logic lives in `providerKeyPayload.ts` with millisecond unit tests, per the dashboard's own rule
+that logic worth asserting must not be reachable only through a render. The panel and the modal keep
+the cases that prove a form field reaches the right payload key
 
 ## Phase 6, visibility: not started
 

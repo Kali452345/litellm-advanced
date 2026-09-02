@@ -69,10 +69,22 @@ const validateNumber = (_: unknown, value: unknown) => {
   return Promise.resolve();
 };
 
+const validateWholeRequests = (_: unknown, value: unknown) => {
+  if (!value) {
+    return Promise.resolve();
+  }
+  if (!/^\d+$/.test(String(value))) {
+    return Promise.reject("Enter a whole number of requests");
+  }
+  return Promise.resolve();
+};
+
 const usageCostRules = {
   deps: [PTU_COUNT_FIELD],
   validate: validatorRules({ validator: validateNumber }, ptuNoUsageCostRule(PTU_COUNT_FIELD)),
 };
+
+const wholeRequestsRules = { validate: validatorRules({ validator: validateWholeRequests }) };
 
 const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
   showAdvancedSettings,
@@ -464,6 +476,46 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                 )}
               </MountedFormField>
             )}
+            <MountedFormField
+              name="rpm"
+              label={labelWithHint(
+                "Requests Per Minute",
+                "Caps how many requests a minute this key may serve. Once the cap is hit the router skips this key until the minute resets and sends the request to another key for the same model.",
+              )}
+              rules={wholeRequestsRules}
+              className="mb-4 mt-4"
+            >
+              {(control) => (
+                <Input
+                  id={control.id}
+                  value={(control.value as string | undefined) ?? ""}
+                  onChange={control.onChange}
+                  onBlur={control.onBlur}
+                  placeholder="e.g. 5"
+                />
+              )}
+            </MountedFormField>
+
+            <MountedFormField
+              name="rpd"
+              label={labelWithHint(
+                "Requests Per Day",
+                "Caps the calendar day the way the per-minute cap covers a minute. A free tier that allows a few hundred requests a day is spent by lunchtime without this.",
+              )}
+              rules={wholeRequestsRules}
+              className="mb-4"
+            >
+              {(control) => (
+                <Input
+                  id={control.id}
+                  value={(control.value as string | undefined) ?? ""}
+                  onChange={control.onChange}
+                  onBlur={control.onBlur}
+                  placeholder="e.g. 100"
+                />
+              )}
+            </MountedFormField>
+
             <MountedFormField
               name="litellm_extra_params"
               label={labelWithHint(

@@ -82,4 +82,28 @@ describe("AdvancedSettings", () => {
     }
     expect(getByText("PTU Effective To (UTC)")).toBeInTheDocument();
   });
+
+  it("offers a per-minute and a per-day request cap for the key being added", async () => {
+    const { getByText, getByLabelText } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    await waitFor(() => {
+      expect(getByText("Requests Per Minute")).toBeInTheDocument();
+    });
+    expect(getByLabelText("Requests Per Minute")).toHaveValue("");
+    expect(getByLabelText("Requests Per Day")).toHaveValue("");
+  });
+
+  it("refuses a cap that is not a whole number of requests", async () => {
+    const { getByText, findByLabelText, findByText } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    fireEvent.change(await findByLabelText("Requests Per Minute"), { target: { value: "2.5" } });
+
+    expect(await findByText("Enter a whole number of requests")).toBeInTheDocument();
+  });
 });

@@ -50,6 +50,48 @@ describe("prepareModelAddRequest", () => {
     expect(deployment.litellmParamsObj.custom_llm_provider).toBe("petals");
   });
 
+  it("sends the request caps as numbers, not the strings the inputs hold", async () => {
+    const formValues = {
+      model_mappings: [{ public_name: "Public Model", litellm_model: "litellm/public" }],
+      model_name: "custom-model-name",
+      rpm: "5",
+      rpd: "100",
+    };
+
+    const deployments = await prepareModelAddRequest({ ...formValues }, "token", null);
+
+    const [deployment] = deployments!;
+    expect(deployment.litellmParamsObj.rpm).toBe(5);
+    expect(deployment.litellmParamsObj.rpd).toBe(100);
+  });
+
+  it("leaves a blank cap out, so the deployment stays uncapped rather than capped at zero", async () => {
+    const formValues = {
+      model_mappings: [{ public_name: "Public Model", litellm_model: "litellm/public" }],
+      model_name: "custom-model-name",
+      rpm: "",
+      rpd: undefined,
+    };
+
+    const deployments = await prepareModelAddRequest({ ...formValues }, "token", null);
+
+    const [deployment] = deployments!;
+    expect("rpm" in deployment.litellmParamsObj).toBe(false);
+    expect("rpd" in deployment.litellmParamsObj).toBe(false);
+  });
+
+  it("keeps a zero cap, which blocks the key rather than reading as unset", async () => {
+    const formValues = {
+      model_mappings: [{ public_name: "Public Model", litellm_model: "litellm/public" }],
+      model_name: "custom-model-name",
+      rpm: "0",
+    };
+
+    const deployments = await prepareModelAddRequest({ ...formValues }, "token", null);
+
+    expect(deployments![0].litellmParamsObj.rpm).toBe(0);
+  });
+
   it("ignores litellm_credential_name inside LiteLLM Params JSON", async () => {
     const formValues = {
       model_mappings: [

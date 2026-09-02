@@ -164,6 +164,14 @@ export const prepareModelAddRequest = async (formValues: Record<string, any>, ac
           continue;
         }
 
+        // Handle the per-credential request caps
+        else if (key === "rpm" || key === "rpd") {
+          if (value !== undefined && value !== null && value !== "") {
+            litellmParamsObj[key] = Number(value);
+          }
+          continue;
+        }
+
         // Handle the PTU flat-cost fields (attributed to the team via model_info)
         else if (key === "ptu_count" || key === "cost_per_ptu_per_hour") {
           if (value !== undefined && value !== null && value !== "") {

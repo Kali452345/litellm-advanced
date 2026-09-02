@@ -129,12 +129,18 @@ Write-Host ''
 Write-Host "Logging to $log"
 Write-Host 'Ctrl+C stops the proxy'
 Write-Host ''
+Write-Host 'Starting. The link above refuses to connect until boot finishes, which on the first' -ForegroundColor Yellow
+Write-Host 'run means importing litellm and applying every migration, so give it a few minutes' -ForegroundColor Yellow
+if (-not $NoBrowser) {
+    Write-Host 'The dashboard opens on its own once it answers' -ForegroundColor Yellow
+}
+Write-Host ''
 
 if (-not $NoBrowser) {
     Start-Job -Name 'litellm-ui' -ScriptBlock {
         param($readiness, $ui)
 
-        $deadline = (Get-Date).AddMinutes(3)
+        $deadline = (Get-Date).AddMinutes(10)
         while ((Get-Date) -lt $deadline) {
             try {
                 if ((Invoke-WebRequest -Uri $readiness -TimeoutSec 3 -UseBasicParsing).StatusCode -eq 200) {
@@ -148,6 +154,7 @@ if (-not $NoBrowser) {
 }
 
 $proxyArgs = @(
+    '-u',
     'litellm/proxy/proxy_cli.py',
     '--config', $Config,
     '--port', $Port,

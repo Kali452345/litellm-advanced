@@ -43,6 +43,20 @@ model_list:
 Three deployments, one public name. Requests go to the first pool member with room, and
 once every Gemini key is spent for the minute the same name keeps working through Groq
 
+A pool built in the Admin UI instead has no `model_list` in the config at all, so the
+router is built from the models in the database and has its settings applied to it
+afterwards. Both settings survive that, from a config file or from a `router_settings`
+row, which is what a config this small is enough for
+
+```yaml
+general_settings:
+  store_model_in_db: true
+
+router_settings:
+  enable_quota_routing: true
+  quota_max_wait_seconds: 75
+```
+
 ## The deployment params
 
 | Param | What it does |

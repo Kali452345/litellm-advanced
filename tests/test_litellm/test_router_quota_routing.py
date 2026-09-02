@@ -407,3 +407,79 @@ async def test_the_same_request_filter_stays_out_of_a_router_that_is_not_quota_r
         "weighted failover enforces its own exclusions hard, further down the pipeline, so softening "
         "them here would let its retry re-pick the deployment it just excluded"
     )
+
+
+@pytest.mark.parametrize("flag", [True, "true"], ids=["a config bool", "an env var string"])
+async def test_quota_routing_can_be_turned_on_after_the_router_is_built(flag: object):
+    """
+    The proxy builds its router from the models in the database and applies router_settings
+    to it afterwards, so keys added through the UI only get their caps enforced if the flag
+    still lands on a router that was built without it.
+    """
+    router = Router(
+        model_list=[
+            deployment("d1", api_key="k1", rpm=1),
+            deployment("d2", api_key="k2", rpm=1),
+        ],
+    )
+
+    router.update_settings(enable_quota_routing=flag, quota_max_wait_seconds=NEVER_HELD)
+
+    assert [await selected_id(router) for _ in range(2)] == ["d1", "d2"]
+    with pytest.raises(RouterRateLimitError):
+        await selected_id(router)
+
+
+async def test_an_unrelated_settings_update_leaves_quota_enforcement_alone():
+    router = quota_router(deployment("d1", api_key="k1", rpm=1))
+
+    router.update_settings(num_retries=3)
+
+    assert router.num_retries == 3
+    assert await selected_id(router) == "d1"
+    with pytest.raises(RouterRateLimitError):
+        await selected_id(router)
+
+
+async def test_a_wait_on_its_own_never_turns_quota_routing_on():
+    router = Router(model_list=[deployment("d1", api_key="k1", rpm=1)])
+
+    router.update_settings(quota_max_wait_seconds=75)
+
+    assert [await selected_id(router) for _ in range(3)] == ["d1"] * 3, (
+        "how long a spent pool may be held says nothing about whether rpm is a cap, so a setting that "
+        "only carries the wait has to leave rpm as a shuffle weight"
+    )
+
+
+async def test_turning_quota_routing_off_hands_rpm_back_to_the_shuffle():
+    router = quota_router(deployment("d1", api_key="k1", rpm=1))
+
+    assert await selected_id(router) == "d1"
+    router.update_settings(enable_quota_routing=False)
+
+    assert [await selected_id(router) for _ in range(3)] == ["d1"] * 3
+
+
+async def test_a_new_wait_reaches_an_enforcer_that_is_already_running():
+    router = quota_router(deployment("d1", api_key="k1", rpm=1), quota_max_wait_seconds=75)
+
+    assert await selected_id(router) == "d1"
+    router.update_settings(quota_max_wait_seconds=NEVER_HELD)
+
+    started = time.monotonic()
+    with pytest.raises(RouterRateLimitError):
+        await selected_id(router)
+
+    assert time.monotonic() - started < 1, "a wait dropped to zero must refuse the spent pool instead of holding it"
+
+
+async def test_a_quota_setting_that_cannot_be_read_is_ignored_rather_than_failing_the_update():
+    router = quota_router(deployment("d1", api_key="k1", rpm=1))
+
+    router.update_settings(quota_max_wait_seconds="ninety", num_retries=3)
+
+    assert router.num_retries == 3, "one unreadable value must not cost the rest of the settings update"
+    assert await selected_id(router) == "d1"
+    with pytest.raises(RouterRateLimitError):
+        await selected_id(router)

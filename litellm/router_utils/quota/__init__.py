@@ -13,6 +13,7 @@ from litellm.router_utils.quota.enforcement import (
     DeploymentQuotaUsage,
     QuotaAvailability,
     QuotaEnforcer,
+    QuotaRoutingSettings,
     WindowUsage,
     warn_on_unenforced_quotas,
 )
@@ -54,6 +55,7 @@ __all__ = (
     "QuotaAvailability",
     "QuotaDescriptor",
     "QuotaEnforcer",
+    "QuotaRoutingSettings",
     "QuotaScope",
     "QuotaScopeMode",
     "QuotaWindow",

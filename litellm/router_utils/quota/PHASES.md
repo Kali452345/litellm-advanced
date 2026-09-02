@@ -189,3 +189,38 @@ rather than getting groups back. One batched counter read per call, which is the
 `availability` was already doing. And one `reportUnknownMemberType`, from reading
 `Router.model_list`, which is a bare `list` upstream, the same cost and the same Pydantic
 adapter at the boundary as phase 5
+
+## Phase 7, the flag survives a router built from the database: done
+
+`QuotaRoutingSettings` in `enforcement.py`, resolved at the end of `Router.update_settings`, so
+`enable_quota_routing` and `quota_max_wait_seconds` land on a router that is already built
+
+Which is the whole point of phase 5's interface. A proxy whose config has no `model_list` builds
+its router from the models in the database, in `_update_llm_router`, with none of the quota kwargs,
+and then applies the config-file and database `router_settings` to it through `update_settings`,
+whose allow-list dropped both names. So a pool set up entirely in the Provider Keys tab rotated
+with nothing enforced and `/model/quota/usage` reported `enforced: false`, while the identical
+pool written into a config file was enforced
+
+Settings that mention neither field leave the enforcer exactly as it is, so an unrelated settings
+save cannot quietly switch enforcement off, and a wait on its own never turns it on. Re-sending
+the flag alone keeps the enforcer already in use rather than rebuilding it at the default wait. A
+changed wait rides onto that same enforcer through `with_max_wait`, which shares the counter, the
+clock and the sleep, because `_add_router_settings_from_db_config` runs on every pass of the
+add-deployment loop and rebuilding there would drop the lock the in-memory reservation holds
+across its read and its increment. A rebuild that does happen runs on the router's own cache, so
+what a pool has already spent this minute survives one
+
+Reading is lenient and per field. What arrives here is the whole combined `router_settings`
+mapping, which can hold `redis_password`, so only these two keys are ever looked at, a value that
+cannot be read is logged by field name and never by value, and a malformed database row costs that
+one setting instead of failing proxy boot. Per field rather than per mapping because a wait typed
+as `75s` would otherwise take the flag down with it, and the flag is what decides whether a pool
+is capped at all. Deliberately not added to `_allowed_settings` or `get_settings`: neither name is
+a plain attribute on the router, and the enforcer is the state they resolve to
+
+One cost, and no new type diagnostics. `update_settings` takes `**kwargs` untyped, so the mapping
+is validated through a `TypeAdapter` at the call site rather than passed straight in, which trades
+a copy of about ten keys per settings apply for the `reportUnknownArgumentType` that phases 3 and 4
+had to accept. Declaring a local instead makes it worse, since pyright reports the narrowed type
+

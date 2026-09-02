@@ -6,7 +6,12 @@ import pytest
 
 from litellm.caching.dual_cache import DualCache
 from litellm.router_utils.quota.counter import AtomicWindowCounter
-from litellm.router_utils.quota.enforcement import NOTHING_SPENT, QuotaEnforcer, warn_on_unenforced_quotas
+from litellm.router_utils.quota.enforcement import (
+    NOTHING_SPENT,
+    QuotaEnforcer,
+    QuotaRoutingSettings,
+    warn_on_unenforced_quotas,
+)
 
 NOW = dt.datetime(2026, 9, 1, 14, 32, 30, tzinfo=dt.timezone.utc)
 LOS_ANGELES = "America/Los_Angeles"
@@ -691,3 +696,54 @@ async def test_usage_never_carries_the_api_key_or_the_counter_key():
 
 async def test_an_empty_pool_reports_nothing_spent():
     assert await enforcer().availability([]) == NOTHING_SPENT
+
+
+async def test_a_lowered_wait_reaches_the_enforcer_the_pool_is_already_counting_on():
+    cache = DualCache()
+    clock = Clock()
+    sleeping = FakeSleep(clock)
+    running = QuotaEnforcer(AtomicWindowCounter(cache), clock=clock, sleep=sleeping, max_wait_seconds=75)
+    pool = [deployment("d1", rpm=1)]
+    await spend(running, pool[0], 1)
+
+    updated = QuotaRoutingSettings(quota_max_wait_seconds=0.0).enforcer(cache=cache, current=running)
+
+    assert updated is not None
+    held = await updated.wait_for_capacity(pool)
+    assert sleeping.waits == [], "a wait lowered to zero must refuse a spent pool rather than hold it"
+    assert held.exhausted_deployment_ids == {"d1"}, "what the pool spent before the update has to still count"
+    assert updated.now() == clock.now, "counters are keyed on the clock, so the injected one has to carry over"
+
+
+async def test_a_raised_wait_reaches_the_enforcer_without_rebuilding_it():
+    cache = DualCache()
+    clock = Clock()
+    sleeping = FakeSleep(clock)
+    running = QuotaEnforcer(AtomicWindowCounter(cache), clock=clock, sleep=sleeping, max_wait_seconds=0.0)
+    pool = [deployment("d1", rpm=1)]
+    await spend(running, pool[0], 1)
+
+    updated = QuotaRoutingSettings(quota_max_wait_seconds=75).enforcer(cache=cache, current=running)
+
+    assert updated is not None
+    held = await updated.wait_for_capacity(pool)
+    assert sleeping.waits == [pytest.approx(SECONDS_TO_NEXT_MINUTE, abs=1)], (
+        "the new budget has to reach the enforcer already in use, sleep and all, instead of a fresh one"
+    )
+    assert held.exhausted_deployment_ids == frozenset()
+
+
+async def test_a_wait_that_cannot_be_read_costs_the_wait_and_not_the_flag(caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger=ROUTER_LOGGER)
+
+    settings = QuotaRoutingSettings.read_from(
+        {"enable_quota_routing": "true", "quota_max_wait_seconds": "a minute and a half", "redis_password": "sk-secret"}
+    )
+
+    assert settings == QuotaRoutingSettings(enable_quota_routing=True), (
+        "the flag decides whether a pool is capped at all, so an unreadable wait beside it must not cost it"
+    )
+    assert quota_records(caplog) == [
+        "Ignoring router setting 'quota_max_wait_seconds', which could not be read as a quota setting"
+    ]
+    assert "sk-secret" not in caplog.text, "these settings arrive alongside secrets, so no value may be logged"

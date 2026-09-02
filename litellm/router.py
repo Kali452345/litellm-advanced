@@ -30,7 +30,7 @@ import anyio
 import httpx
 import openai
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 from typing_extensions import overload
 
 import litellm
@@ -176,6 +176,7 @@ from litellm.router_utils.quota import (
     AtomicWindowCounter,
     QuotaAvailability,
     QuotaEnforcer,
+    QuotaRoutingSettings,
     mark_attempted_deployment,
     mark_reservation,
     read_attempted_deployment_ids,
@@ -364,6 +365,8 @@ _DeploymentT: Final = TypeVar("_DeploymentT", bound=Mapping[str, object])
 
 _ALIAS_PARAMS_NEVER_FORWARDED: Final = frozenset({"model", "api_base", "api_key", "api_version"})
 _ALIAS_MARKER_FORWARDED_PARAMS_KWARG: Final = "_alias_marker_forwarded_params"
+
+_ROUTER_SETTINGS: Final[TypeAdapter[Mapping[str, object]]] = TypeAdapter(Mapping[str, object])
 
 
 def _stream_chunks_have_generated_content(chunks: Sequence[ModelResponseStream]) -> bool:
@@ -11319,6 +11322,10 @@ class Router:
 
         if rebuild_routing_groups:
             self._init_routing_groups(self._routing_groups_input)
+
+        self.quota_enforcer = QuotaRoutingSettings.read_from(_ROUTER_SETTINGS.validate_python(kwargs)).enforcer(
+            cache=self.cache, current=self.quota_enforcer
+        )
         verbose_router_logger.debug("Updated Router settings: %s", self.get_settings())
 
     def _get_client(self, deployment, kwargs, client_type=None):

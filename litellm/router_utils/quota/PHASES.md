@@ -96,12 +96,43 @@ parameter is partially unknown. Declaring the local does not help, because pyrig
 assigned type and reports the narrowed one, and folding the filter into a helper only moves the
 diagnostic from the local onto the pool argument
 
-## Phase 5, the setup interface: not started
+## Phase 5, the setup interface: the api is done, the dashboard is next
 
-Saving a profile per provider and per key: base url, key, the models that key serves, and optional
-per-minute and per-day limits, so none of it is retyped for the next key. Profiles come from
-existing deployments, no new table. `credential_info` in `LiteLLM_CredentialsTable` is not
-encrypted, only `credential_values` is, so no secret may ever be written there
+`GET /provider/profiles` and `POST /provider/keys` in
+`litellm/proxy/management_endpoints/provider_profile_endpoints.py`. The first reports what each
+provider is already set up with, the second puts another key behind it in one call, so the base url,
+the api version, the models that provider serves and the per-minute and per-day caps are typed once
+
+A profile is derived from `llm_router.model_list`, grouped by provider and base url, so there is no
+new table, nothing that can go stale against the deployments it describes, and no secret written to
+`credential_info`, which is not encrypted. Every field is what all of that provider's deployments
+agree on, and a disagreement reports null rather than whichever deployment happened to be first,
+because guessing here would silently cap a new key at another key's allowance. The caps hang off each
+model entry instead of the profile, since one key's allowance differs per model. Key count is a count
+and never an id: scope ids are salted digests of the key itself, and `scope.py` says they are never
+logged or returned
+
+`POST /provider/keys` copies the profile onto one deployment per model the provider serves and hands
+each one to `POST /model/new` rather than writing rows itself, so encryption at rest, the permission
+check, the audit log and the router reload keep a single implementation. Writes go one at a time
+because each one reloads the router from the database. What the response reports is read off the plan
+before the first write, because `_add_model_to_db` encrypts `litellm_params` in place on the
+deployment it is handed. A model the provider rejects costs only that model: each create returns its
+own outcome and the response names the failure per model
+
+`quota_scope_id` is deliberately never copied. That param is an operator saying two deployments spend
+from one account, so copying it onto a new key would count that key against the old key's counter and
+give the pool half of what it has. `rpm`, `rpd` and `api_base` can be overridden per request, and a
+provider that is already reached at more than one base url refuses to guess and asks which one the new
+key uses
+
+Costs, accepted. Two `reportUnknown*` against the two untyped things upstream, `Router.model_list`
+being a bare `list` and `add_new_model` having no return annotation. Both are validated with a
+Pydantic adapter on the spot rather than typed with `Any`, so the unknown stops at the boundary. The
+router-level `tags` needs one `# mutable-ok`, since FastAPI types that parameter as `list`
+
+Still open in this phase: the dashboard half, an rpm and rpd input plus a profile picker in
+`ui/litellm-dashboard` so a second key is a form with the shared fields already filled in
 
 ## Phase 6, visibility: not started
 

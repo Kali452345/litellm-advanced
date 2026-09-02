@@ -12068,6 +12068,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/provider/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Provider Key
+         * @description Put another api key behind a provider, one deployment per model that provider serves
+         */
+        post: operations["add_provider_key_provider_keys_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/provider/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Provider Profiles
+         * @description What each configured provider is set up with, so putting another key behind it is one call
+         */
+        get: operations["list_provider_profiles_provider_profiles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/public/agent_hub": {
         parameters: {
             query?: never;
@@ -22657,6 +22697,51 @@ export interface components {
              */
             quality: number;
         };
+        /** AddProviderKeyRequest */
+        AddProviderKeyRequest: {
+            /**
+             * Api Base
+             * @description The new key's base url, defaulting to the provider's
+             */
+            api_base?: string | null;
+            /**
+             * Api Key
+             * @description The new key
+             */
+            api_key: string;
+            /**
+             * Models
+             * @description Which of the provider's model names to serve, defaulting to all of them
+             */
+            models?: string[] | null;
+            /**
+             * Provider
+             * @description The provider to add the key to, as reported by /provider/profiles
+             */
+            provider: string;
+            /**
+             * Rpd
+             * @description Overrides the per-day cap copied from the provider
+             */
+            rpd?: number | null;
+            /**
+             * Rpm
+             * @description Overrides the per-minute cap copied from the provider
+             */
+            rpm?: number | null;
+        };
+        /** AddProviderKeyResponse */
+        AddProviderKeyResponse: {
+            /** Api Base */
+            api_base?: string | null;
+            /**
+             * Models
+             * @default []
+             */
+            models: components["schemas"]["AddedModel"][];
+            /** Provider */
+            provider: string;
+        };
         /** AddTeamCallback */
         AddTeamCallback: {
             /** Callback Name */
@@ -22670,6 +22755,17 @@ export interface components {
             callback_vars: {
                 [key: string]: string;
             };
+        };
+        /** AddedModel */
+        AddedModel: {
+            /** Error */
+            error?: string | null;
+            /** Litellm Model */
+            litellm_model: string;
+            /** Model Id */
+            model_id?: string | null;
+            /** Model Name */
+            model_name: string;
         };
         /**
          * AgentCapabilities
@@ -24568,6 +24664,7 @@ export interface components {
         /** ChatCompletionAudioObject */
         ChatCompletionAudioObject: {
             input_audio: components["schemas"]["InputAudio"];
+            prompt_cache_breakpoint?: components["schemas"]["PromptCacheBreakpoint"];
             /**
              * Type
              * @constant
@@ -29168,6 +29265,12 @@ export interface components {
             } | null;
             /** Quality Router Default Model */
             quality_router_default_model?: string | null;
+            /** Quota Reset Timezone */
+            quota_reset_timezone?: string | null;
+            /** Quota Scope */
+            quota_scope?: ("credential" | "credential_model") | null;
+            /** Quota Scope Id */
+            quota_scope_id?: string | null;
             /** Region Name */
             region_name?: string | null;
             /** Regional Endpoint Uplift Multiplier */
@@ -29176,6 +29279,8 @@ export interface components {
             regional_processing_uplift_multiplier_eu?: number | null;
             /** Regional Processing Uplift Multiplier Us */
             regional_processing_uplift_multiplier_us?: number | null;
+            /** Rpd */
+            rpd?: number | null;
             /** Rpm */
             rpm?: number | null;
             /** S3 Bucket Name */
@@ -33619,6 +33724,19 @@ export interface components {
             prompt_id: string;
             prompt_info?: components["schemas"]["PromptInfo"] | null;
         };
+        /**
+         * PromptCacheBreakpoint
+         * @description Marks the exact end of a reusable prompt prefix.
+         *
+         *     The breakpoint inherits its TTL from the request's `prompt_cache_options.ttl`; the boundary is not rounded to a token block.
+         */
+        PromptCacheBreakpoint: {
+            /**
+             * Mode
+             * @constant
+             */
+            mode: "explicit";
+        };
         /** PromptInfo */
         PromptInfo: {
             /**
@@ -33780,6 +33898,60 @@ export interface components {
             required: boolean;
             /** Tooltip */
             tooltip?: string | null;
+        };
+        /** ProviderProfile */
+        ProviderProfile: {
+            /** Api Base */
+            api_base?: string | null;
+            /** Api Version */
+            api_version?: string | null;
+            /**
+             * Key Count
+             * @description How many distinct credentials already serve these models
+             */
+            key_count: number;
+            /**
+             * Models
+             * @default []
+             */
+            models: components["schemas"]["ProviderProfileModel"][];
+            /** Provider */
+            provider: string;
+            /** Quota Reset Timezone */
+            quota_reset_timezone?: string | null;
+            /** Quota Scope */
+            quota_scope?: ("credential" | "credential_model") | null;
+        };
+        /** ProviderProfileModel */
+        ProviderProfileModel: {
+            /**
+             * Litellm Model
+             * @description The model string the provider itself is sent
+             */
+            litellm_model: string;
+            /**
+             * Model Name
+             * @description The name callers ask for, shared by every key behind this provider
+             */
+            model_name: string;
+            /**
+             * Rpd
+             * @description Requests per day one key gets, null when the keys disagree
+             */
+            rpd?: number | null;
+            /**
+             * Rpm
+             * @description Requests per minute one key gets, null when the keys disagree
+             */
+            rpm?: number | null;
+        };
+        /** ProviderProfilesResponse */
+        ProviderProfilesResponse: {
+            /**
+             * Profiles
+             * @default []
+             */
+            profiles: components["schemas"]["ProviderProfile"][];
         };
         /**
          * ProxyChatCompletionRequest
@@ -38976,6 +39148,12 @@ export interface components {
             } | null;
             /** Quality Router Default Model */
             quality_router_default_model?: string | null;
+            /** Quota Reset Timezone */
+            quota_reset_timezone?: string | null;
+            /** Quota Scope */
+            quota_scope?: ("credential" | "credential_model") | null;
+            /** Quota Scope Id */
+            quota_scope_id?: string | null;
             /** Region Name */
             region_name?: string | null;
             /** Regional Endpoint Uplift Multiplier */
@@ -38984,6 +39162,8 @@ export interface components {
             regional_processing_uplift_multiplier_eu?: number | null;
             /** Regional Processing Uplift Multiplier Us */
             regional_processing_uplift_multiplier_us?: number | null;
+            /** Rpd */
+            rpd?: number | null;
             /** Rpm */
             rpm?: number | null;
             /** S3 Bucket Name */
@@ -54287,6 +54467,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderBudgetResponse"];
+                };
+            };
+        };
+    };
+    add_provider_key_provider_keys_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddProviderKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddProviderKeyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_provider_profiles_provider_profiles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProfilesResponse"];
                 };
             };
         };

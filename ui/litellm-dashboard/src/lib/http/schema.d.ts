@@ -8868,6 +8868,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/model/quota/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Model Quota Usage
+         * @description What each pool of keys has spent and has left of its per-minute and per-day allowance
+         */
+        get: operations["get_model_quota_usage_model_quota_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/model/settings": {
         parameters: {
             query?: never;
@@ -27883,6 +27903,37 @@ export interface components {
             metadata?: components["schemas"]["KeyMetadata"];
             metrics: components["schemas"]["SpendMetrics"];
         };
+        /** KeyQuotaUsage */
+        KeyQuotaUsage: {
+            /** Api Base */
+            api_base?: string | null;
+            /**
+             * Exhausted
+             * @description Whether any of this key's windows is spent, so routing will skip it
+             */
+            exhausted: boolean;
+            /**
+             * Litellm Model
+             * @description The model string the provider itself is sent
+             */
+            litellm_model: string;
+            /**
+             * Model Id
+             * @description The deployment id this key serves this model under
+             */
+            model_id: string;
+            /**
+             * Seconds Until Room
+             * @description When this key can take another request, null when it can right now
+             */
+            seconds_until_room?: number | null;
+            /**
+             * Windows
+             * @description Empty when this key has no cap configured, so nothing meters it
+             * @default []
+             */
+            windows: components["schemas"]["QuotaWindowUsage"][];
+        };
         /** KeyRequest */
         KeyRequest: {
             /** Key Aliases */
@@ -31507,6 +31558,19 @@ export interface components {
             /** Model Name */
             model_name: string;
         };
+        /** ModelQuotaUsageResponse */
+        ModelQuotaUsageResponse: {
+            /**
+             * Enforced
+             * @description Whether the router was built with enable_quota_routing. False means the caps below are reported as configured but nothing counts against them, so every count stays at zero
+             */
+            enforced: boolean;
+            /**
+             * Pools
+             * @default []
+             */
+            pools: components["schemas"]["PoolQuotaUsage"][];
+        };
         /** ModelResponse */
         ModelResponse: {
             /** Choices */
@@ -33717,6 +33781,29 @@ export interface components {
              */
             version_status: string;
         };
+        /** PoolQuotaUsage */
+        PoolQuotaUsage: {
+            /**
+             * Exhausted
+             * @description Whether every key in this pool is spent, which is when a request fails
+             */
+            exhausted: boolean;
+            /**
+             * Keys
+             * @default []
+             */
+            keys: components["schemas"]["KeyQuotaUsage"][];
+            /**
+             * Model Name
+             * @description The name callers ask for, which every key below is rotated through
+             */
+            model_name: string;
+            /**
+             * Seconds Until Room
+             * @description When this pool gets a slot back, set only once every key in it is spent
+             */
+            seconds_until_room?: number | null;
+        };
         /** Prompt */
         Prompt: {
             litellm_params: components["schemas"]["PromptLiteLLMParams"];
@@ -34131,6 +34218,31 @@ export interface components {
                     [key: string]: unknown;
                 };
             } | null;
+        };
+        /** QuotaWindowUsage */
+        QuotaWindowUsage: {
+            /**
+             * Kind
+             * @description rpm for the minute window, rpd for the day window
+             * @enum {string}
+             */
+            kind: "rpm" | "rpd";
+            /** Limit */
+            limit: number;
+            /** Remaining */
+            remaining: number;
+            /**
+             * Seconds Until Reset
+             * @description When this window starts over, whether or not it is spent
+             */
+            seconds_until_reset: number;
+            /**
+             * Timezone
+             * @description Which day boundary the rpd window counts to. Minute windows are always UTC
+             */
+            timezone: string;
+            /** Used */
+            used: number;
         };
         /** RawRequestTypedDict */
         RawRequestTypedDict: {
@@ -50900,6 +51012,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_model_quota_usage_model_quota_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelQuotaUsageResponse"];
                 };
             };
         };

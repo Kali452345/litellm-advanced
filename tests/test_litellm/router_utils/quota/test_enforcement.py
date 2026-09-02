@@ -6,7 +6,7 @@ import pytest
 
 from litellm.caching.dual_cache import DualCache
 from litellm.router_utils.quota.counter import AtomicWindowCounter
-from litellm.router_utils.quota.enforcement import QuotaEnforcer, warn_on_unenforced_quotas
+from litellm.router_utils.quota.enforcement import NOTHING_SPENT, QuotaEnforcer, warn_on_unenforced_quotas
 
 NOW = dt.datetime(2026, 9, 1, 14, 32, 30, tzinfo=dt.timezone.utc)
 LOS_ANGELES = "America/Los_Angeles"
@@ -591,3 +591,103 @@ async def test_repeated_refunds_cannot_mint_capacity():
     assert await subject.reserve_first_available(pool[0], pool) is None, (
         "refunds must floor at zero, or a retried failure callback hands out free slots"
     )
+
+
+async def test_usage_reports_what_a_key_has_spent_and_has_left():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=5)]
+
+    await spend(subject, pool[0], 2)
+
+    (row,) = await subject.usage(pool)
+    (window,) = row.windows
+    assert (window.kind, window.limit, window.used, window.remaining) == ("rpm", 5, 2, 3)
+    assert not row.exhausted
+    assert row.seconds_until_room is None
+
+
+async def test_usage_reports_one_row_per_deployment_in_the_order_given():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=5), deployment("d2"), deployment("d3", rpd=100, api_key="sk-other")]
+
+    rows = await subject.usage(pool)
+
+    assert tuple(row.deployment_id for row in rows) == ("d1", "d2", "d3"), (
+        "a caller zips these rows back onto its own deployment list, so order and length are the contract"
+    )
+
+
+async def test_usage_reports_no_window_for_a_key_with_no_cap():
+    subject = enforcer()
+    pool = [deployment("d1")]
+
+    await spend(subject, pool[0], 3)
+
+    (row,) = await subject.usage(pool)
+    assert row.windows == ()
+    assert not row.exhausted, "an unmetered key has nothing to spend, so it can always take another request"
+    assert row.seconds_until_room is None
+
+
+async def test_usage_reports_when_a_spent_key_frees_up():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=1)]
+
+    await spend(subject, pool[0], 1)
+
+    (row,) = await subject.usage(pool)
+    assert (row.exhausted, row.seconds_until_room) == (True, SECONDS_TO_NEXT_MINUTE)
+    assert row.windows[0].remaining == 0
+
+
+async def test_a_key_blocked_on_both_windows_reports_the_day_boundary():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=1, rpd=1)]
+
+    await spend(subject, pool[0], 1)
+
+    (row,) = await subject.usage(pool)
+    assert row.seconds_until_room == SECONDS_TO_NEXT_UTC_DAY, (
+        "the minute rolling over buys nothing while the day cap is still spent"
+    )
+
+
+async def test_lowering_a_cap_below_what_is_already_spent_reports_no_headroom():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=5)]
+    await spend(subject, pool[0], 3)
+
+    pool[0]["litellm_params"]["rpm"] = 2
+
+    (row,) = await subject.usage(pool)
+    assert (row.windows[0].used, row.windows[0].remaining) == (3, 0), "remaining must floor at zero, never go negative"
+    assert row.exhausted
+
+
+async def test_usage_reports_a_shared_credential_against_every_deployment_that_spends_it():
+    subject = enforcer()
+    pool = [
+        deployment("d1", rpm=5, quota_scope="credential"),
+        deployment("d2", rpm=5, quota_scope="credential", model="gemini/gemini-2.5-pro"),
+    ]
+
+    await spend(subject, pool[0], 1)
+
+    rows = await subject.usage(pool)
+    assert tuple(row.windows[0].used for row in rows) == (1, 1), (
+        "both deployments read the one counter, which is why the pool reports exhaustion rather than a spend total"
+    )
+
+
+async def test_usage_never_carries_the_api_key_or_the_counter_key():
+    subject = enforcer()
+    pool = [deployment("d1", rpm=5, api_key="sk-quota-usage-secret")]
+
+    rows = await subject.usage(pool)
+
+    assert "sk-quota-usage-secret" not in str(rows)
+    assert "litellm_quota" not in str(rows), "a counter key holds the scope digest, so it may not be reported"
+
+
+async def test_an_empty_pool_reports_nothing_spent():
+    assert await enforcer().availability([]) == NOTHING_SPENT

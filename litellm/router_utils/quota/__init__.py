@@ -10,8 +10,10 @@ from litellm.router_utils.quota.counter import (
 )
 from litellm.router_utils.quota.enforcement import (
     NOTHING_SPENT,
+    DeploymentQuotaUsage,
     QuotaAvailability,
     QuotaEnforcer,
+    WindowUsage,
     warn_on_unenforced_quotas,
 )
 from litellm.router_utils.quota.reservation import (
@@ -48,6 +50,7 @@ __all__ = (
     "NOTHING_SPENT",
     "QUOTA_RESERVED_AT_KEY",
     "AtomicWindowCounter",
+    "DeploymentQuotaUsage",
     "QuotaAvailability",
     "QuotaDescriptor",
     "QuotaEnforcer",
@@ -60,6 +63,7 @@ __all__ = (
     "ReserveGranted",
     "ReserveResult",
     "UnknownQuotaTimezoneError",
+    "WindowUsage",
     "build_descriptors",
     "counter_key",
     "day_window",

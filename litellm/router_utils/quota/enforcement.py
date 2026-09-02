@@ -3,11 +3,11 @@ Quota enforcement for router deployment selection.
 
 Two hooks, deliberately asymmetric:
 
-- The read side, `availability` and `most_spent_first`, is advisory. Each reads
-  every candidate's counters in one round trip, so selection can drop the keys
-  whose minute or day allowance is already spent and rank what is left. Two
-  concurrent requests can both pass it with one slot left, which is fine,
-  because it decides nothing on its own.
+- The read side, `usage`, `availability` and `most_spent_first`, is advisory. Each
+  reads every candidate's counters in one round trip, so selection can drop the
+  keys whose minute or day allowance is already spent and rank what is left, and
+  an operator can see what a pool has left. Two concurrent requests can both pass
+  it with one slot left, which is fine, because it decides nothing on its own.
 - `reserve_first_available` is the authority. It consumes the allowance
   atomically for the deployment that selection landed on, and when a concurrent
   request took the last slot it falls forward to another candidate instead of
@@ -43,7 +43,7 @@ from litellm.router_utils.quota.counter import (
     build_descriptors,
 )
 from litellm.router_utils.quota.scope import DEFAULT_QUOTA_SCOPE_MODE, QuotaScope, resolve_quota_scope
-from litellm.router_utils.quota.window import UnknownQuotaTimezoneError
+from litellm.router_utils.quota.window import QuotaWindowKind, UnknownQuotaTimezoneError
 from litellm.types.router import QuotaScopeMode
 
 _DeploymentT: Final = TypeVar("_DeploymentT", bound=Mapping[str, object])
@@ -98,6 +98,52 @@ class _CandidateQuota:
 
 
 @dataclass(frozen=True, slots=True)
+class WindowUsage:
+    kind: QuotaWindowKind
+    limit: int
+    used: int
+    timezone_name: str
+    seconds_until_reset: int
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.limit - self.used)
+
+    @property
+    def exhausted(self) -> bool:
+        return self.used >= self.limit
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentQuotaUsage:
+    """
+    One deployment's spend against each window it meters.
+
+    `windows` is empty for a deployment with no cap configured, which is why an
+    unmetered key reads as never exhausted rather than as fully available: there
+    is nothing to be available out of.
+    """
+
+    deployment_id: str | None
+    windows: tuple[WindowUsage, ...]
+
+    @property
+    def exhausted(self) -> bool:
+        return any(window.exhausted for window in self.windows)
+
+    @property
+    def seconds_until_room(self) -> int | None:
+        """
+        When this deployment can take another request, or None if it can right now.
+
+        The latest of the spent windows, so a key blocked on both its minute and
+        its day cap reports the day boundary rather than the minute it cannot use.
+        """
+        spent: Final = tuple(window.seconds_until_reset for window in self.windows if window.exhausted)
+        return max(spent) if spent else None
+
+
+@dataclass(frozen=True, slots=True)
 class QuotaAvailability:
     """
     What selection has to skip, and when the pool gets capacity back.
@@ -143,6 +189,22 @@ class QuotaEnforcer:
         """The clock the counters are keyed on, for a caller that has to stamp a reservation."""
         return self._clock()
 
+    async def usage(self, deployments: Sequence[Mapping[str, object]]) -> tuple[DeploymentQuotaUsage, ...]:
+        """
+        What each deployment has spent against each window it meters.
+
+        One row per deployment, in the order they were passed, so a caller can zip
+        the rows back onto its own list. Advisory like the rest of the read side: a
+        count can be a request stale by the time it is read, and `reserve` stays the
+        authority on whether a request fits.
+        """
+        now: Final = self._clock()
+        quotas: Final = tuple(self._view_quota(deployment, now) for deployment in deployments)
+        counts: Final = await self._counter.peek(
+            tuple(descriptor.key for quota in quotas for descriptor in quota.descriptors)
+        )
+        return tuple(_usage_of(quota, counts) for quota in quotas)
+
     async def availability(self, deployments: Sequence[Mapping[str, object]]) -> QuotaAvailability:
         """
         Which deployments have no room left for another request.
@@ -150,30 +212,16 @@ class QuotaEnforcer:
         One batched read covers the whole candidate list, so the cost is a single
         round trip no matter how many keys a model group fans out to.
         """
-        quotas: Final = self._candidate_quotas(deployments)
-        if not quotas:
-            return NOTHING_SPENT
-        counts: Final = await self._counter.peek(
-            tuple(descriptor.key for quota in quotas for descriptor in quota.descriptors)
-        )
-        blocked: Final = tuple(
-            (
-                quota.deployment_id,
-                tuple(
-                    descriptor.window.seconds_until_reset
-                    for descriptor in quota.descriptors
-                    if counts.get(descriptor.key, 0) >= descriptor.limit
-                ),
-            )
-            for quota in quotas
-        )
+        rows: Final = await self.usage(deployments)
         exhausted: Final = frozenset(
-            deployment_id for deployment_id, resets in blocked if resets and deployment_id is not None
+            row.deployment_id for row in rows if row.exhausted and row.deployment_id is not None
         )
         return QuotaAvailability(
             exhausted_deployment_ids=exhausted,
             seconds_until_reset=(
-                min(max(resets) for _, resets in blocked if resets) if len(exhausted) == len(deployments) else None
+                min((row.seconds_until_room for row in rows if row.seconds_until_room is not None), default=None)
+                if len(exhausted) == len(deployments)
+                else None
             ),
         )
 
@@ -264,28 +312,14 @@ class QuotaEnforcer:
         """
         await self._counter.refund(self._descriptors_for(deployment, reserved_at))
 
-    def _candidate_quotas(self, deployments: Sequence[Mapping[str, object]]) -> tuple[_CandidateQuota, ...]:
-        now: Final = self._clock()
-        return tuple(
-            quota
-            for quota in (self._candidate_quota(deployment, now) for deployment in deployments)
-            if quota is not None
-        )
-
-    def _candidate_quota(self, deployment: Mapping[str, object], now: dt.datetime) -> _CandidateQuota | None:
+    def _view_quota(self, deployment: Mapping[str, object], now: dt.datetime) -> _CandidateQuota:
         view: Final = _parse_deployment(deployment)
         if view is None:
-            return None
-        descriptors: Final = self._descriptors_for_view(view, now)
-        if not descriptors:
-            return None
-        return _CandidateQuota(deployment_id=view.model_info.id, descriptors=descriptors)
+            return _CandidateQuota(deployment_id=None, descriptors=())
+        return _CandidateQuota(deployment_id=view.model_info.id, descriptors=self._descriptors_for_view(view, now))
 
     def _descriptors_for(self, deployment: Mapping[str, object], now: dt.datetime) -> tuple[QuotaDescriptor, ...]:
-        view: Final = _parse_deployment(deployment)
-        if view is None:
-            return ()
-        return self._descriptors_for_view(view, now)
+        return self._view_quota(deployment, now).descriptors
 
     def _descriptors_for_view(self, view: _QuotaDeploymentView, now: dt.datetime) -> tuple[QuotaDescriptor, ...]:
         rpm: Final = _first_set(view.rpm, view.litellm_params.rpm, view.model_info.rpm)
@@ -355,6 +389,22 @@ def _parse_deployment(deployment: Mapping[str, object]) -> _QuotaDeploymentView 
             tuple(error["loc"] for error in e.errors(include_input=False, include_url=False)),
         )
         return None
+
+
+def _usage_of(quota: _CandidateQuota, counts: Mapping[str, int]) -> DeploymentQuotaUsage:
+    return DeploymentQuotaUsage(
+        deployment_id=quota.deployment_id,
+        windows=tuple(
+            WindowUsage(
+                kind=descriptor.window.kind,
+                limit=descriptor.limit,
+                used=counts.get(descriptor.key, 0),
+                timezone_name=descriptor.window.timezone_name,
+                seconds_until_reset=descriptor.window.seconds_until_reset,
+            )
+            for descriptor in quota.descriptors
+        ),
+    )
 
 
 def _spent_ratio(descriptors: Sequence[QuotaDescriptor], counts: Mapping[str, int]) -> float:

@@ -150,7 +150,42 @@ Pure logic lives in `providerKeyPayload.ts` with millisecond unit tests, per the
 that logic worth asserting must not be reachable only through a render. The panel and the modal keep
 the cases that prove a form field reaches the right payload key
 
-## Phase 6, visibility: not started
+## Phase 6, visibility: done
 
-`GET /model/quota/usage` for what each pool has left, docs, and a live-proxy curl proof against real
-provider keys
+`GET /model/quota/usage` in `litellm/proxy/management_endpoints/model_quota_endpoints.py`,
+admin-view-only, reporting one entry per model name with every key behind it and what each key
+has spent of each window it meters. Plus `README.md` in this package, the operator-facing
+writeup of the whole feature: how to turn it on, what each deployment param means, what a
+request actually does, and the gaps
+
+The read lives on the enforcer, as `QuotaEnforcer.usage`, not in the endpoint.
+`_descriptors_for_view` already owns cap precedence and scope resolution, and an endpoint that
+rebuilt counter keys itself would be a second copy of both, free to drift from what routing
+enforces. `availability` is now derived from `usage` rather than reading the counters itself, so
+the rule that a reset time is reported only when the whole pool is spent exists in one place.
+The 43 enforcement tests that predate this phase are what pinned that refactor as
+behavior-preserving
+
+Deliberately not shipped: a requests-remaining number per pool. Two deployments can share one
+counter, through `quota_scope_id` or through the same key being added twice, so a total would
+double count them, and a wrong number in an observability endpoint is worse than no number. Each
+pool reports exhaustion instead, an AND over its keys, which is dedupe-immune and is exactly
+what routing itself acts on
+
+Nothing derived from a key reaches the wire. A key is identified by its deployment id, its model
+string and its base url, never by the quota scope id, which is a salted digest of the key. When
+the router was built without `enable_quota_routing` the response says `enforced: false` and the
+counters are read through an enforcer built on the spot, so an operator still sees the caps they
+configured and learns why every count is zero, instead of an empty answer that reads as nothing
+being configured
+
+Docs are in-repo rather than a docs-site page, because this fork tracks no `docs/` directory at
+all. No dashboard consumer this phase either: the Provider Keys tab covers setup, and a live
+usage panel is its own piece of work rather than a footnote to this one
+
+Costs, accepted. `usage` returns a row per deployment, including the unmetered ones, so a caller
+can zip the rows back onto its own list; that means the endpoint groups by model name itself
+rather than getting groups back. One batched counter read per call, which is the same read
+`availability` was already doing. And one `reportUnknownMemberType`, from reading
+`Router.model_list`, which is a bare `list` upstream, the same cost and the same Pydantic
+adapter at the boundary as phase 5

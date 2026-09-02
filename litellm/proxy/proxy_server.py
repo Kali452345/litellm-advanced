@@ -512,6 +512,9 @@ from litellm.proxy.management_endpoints.model_management_endpoints import (
 from litellm.proxy.management_endpoints.model_management_endpoints import (
     router as model_management_router,
 )
+from litellm.proxy.management_endpoints.model_quota_endpoints import (
+    router as model_quota_router,
+)
 from litellm.proxy.management_endpoints.organization_endpoints import (
     router as organization_router,
 )
@@ -17966,6 +17969,7 @@ app.include_router(user_banner_endpoints_router)
 app.include_router(team_callback_router)
 app.include_router(budget_management_router)
 app.include_router(model_management_router)
+app.include_router(model_quota_router)
 app.include_router(provider_profile_router)
 app.include_router(model_access_group_management_router)
 app.include_router(auto_router_management_router)

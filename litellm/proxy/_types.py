@@ -677,6 +677,7 @@ class LiteLLMRoutes(enum.Enum):
             "/model/update",
             "/model/delete",
             "/model/info",
+            "/model/quota/usage",
             # provider profiles
             "/provider/profiles",
             "/provider/keys",

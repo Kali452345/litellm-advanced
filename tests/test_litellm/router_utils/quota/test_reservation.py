@@ -12,8 +12,11 @@ from litellm.exceptions import (
     Timeout,
 )
 from litellm.router_utils.quota.reservation import (
+    ATTEMPTED_DEPLOYMENT_IDS_KEY,
     QUOTA_RESERVED_AT_KEY,
+    mark_attempted_deployment,
     mark_reservation,
+    read_attempted_deployment_ids,
     read_reservation,
     request_never_reached_provider,
 )
@@ -21,6 +24,10 @@ from litellm.router_utils.quota.reservation import (
 RESERVED_AT = dt.datetime(2026, 9, 1, 14, 32, 30, tzinfo=dt.timezone.utc)
 DEPLOYMENT_ID = "d1"
 MODEL = "gemini/gemini-2.5-flash"
+
+
+def deployment(dep_id: str | int | None) -> dict:
+    return {"litellm_params": {"model": MODEL}, "model_info": {} if dep_id is None else {"id": dep_id}}
 
 
 def request_with(channel: str, *, deployment_id: str | None = DEPLOYMENT_ID) -> dict:
@@ -134,3 +141,59 @@ def test_an_unreadable_stamp_reads_as_nothing_to_refund(stamp: object):
 
 def test_kwargs_that_are_not_a_request_read_as_nothing_to_refund():
     assert read_reservation({"metadata": "a string, not a channel", "litellm_params": 7}) is None
+
+
+@pytest.mark.parametrize("channel", ["metadata", "litellm_metadata"])
+def test_a_marked_deployment_reads_back_as_already_tried(channel: str):
+    request = {channel: {}}
+
+    mark_attempted_deployment(request, deployment=deployment(DEPLOYMENT_ID))
+
+    assert read_attempted_deployment_ids(request) == frozenset({DEPLOYMENT_ID})
+
+
+def test_every_key_the_request_burned_stays_marked_not_just_the_last_one():
+    request = {"metadata": {}}
+
+    mark_attempted_deployment(request, deployment=deployment("d1"))
+    mark_attempted_deployment(request, deployment=deployment("d2"))
+
+    assert read_attempted_deployment_ids(request) == frozenset({"d1", "d2"}), (
+        "a third attempt has to skip both keys the request already spent a slot on"
+    )
+
+
+def test_the_marker_is_weighted_failovers_own_exclusion_list():
+    request = {"metadata": {ATTEMPTED_DEPLOYMENT_IDS_KEY: ["already-failed-over"]}}
+
+    mark_attempted_deployment(request, deployment=deployment("d1"))
+
+    assert request["metadata"][ATTEMPTED_DEPLOYMENT_IDS_KEY] == ["already-failed-over", "d1"], (
+        "both walks read one accumulator, so a key burned by a retry stays skipped when the request "
+        "escalates into weighted failover, and the other way round"
+    )
+    assert all(isinstance(dep_id, str) for dep_id in request["metadata"][ATTEMPTED_DEPLOYMENT_IDS_KEY]), (
+        "the marker travels through JSON logging"
+    )
+
+
+def test_marking_never_grows_a_metadata_channel_the_request_did_not_have_either():
+    request: dict = {}
+
+    mark_attempted_deployment(request, deployment=deployment(DEPLOYMENT_ID))
+
+    assert request == {}
+    assert read_attempted_deployment_ids(request) == frozenset()
+
+
+def test_a_deployment_without_an_id_marks_nothing():
+    request = {"metadata": {}}
+
+    mark_attempted_deployment(request, deployment=deployment(None))
+
+    assert request == {"metadata": {}}, "an id-less deployment cannot be excluded, so it must not be recorded"
+
+
+@pytest.mark.parametrize("marker", ["not-a-list", 7, [None], {"d1": True}])
+def test_an_unreadable_marker_reads_as_nothing_tried(marker: object):
+    assert read_attempted_deployment_ids({"metadata": {ATTEMPTED_DEPLOYMENT_IDS_KEY: marker}}) == frozenset()

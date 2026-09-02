@@ -61,11 +61,40 @@ locals rather than rebinding. Offset by importing `_get_excluded_filtered_deploy
 reaching through `litellm.utils`, which drops one `reportPrivateUsage` and two
 `reportUnknownMemberType`
 
-## Phase 4, failover across keys and providers: next
+## Phase 4, failover across keys and providers: done
 
-An error on one key must re-dispatch to the next key, then to the next provider, inside the same
-request, without the harness seeing the failure. Weighted failover already carries the exclusion
-list; this phase makes it the default for a quota pool
+A request records the key it reserved a slot on, and selection drops the keys the request has already
+recorded. So an error on one key re-dispatches to the next key in the pool, and on into the next
+provider once that provider's keys are gone, inside the same call. The harness sees one answer
+
+The marker shares weighted failover's `_failover_excluded_ids` metadata key, so both walks read one
+accumulator: a key burned by a retry stays skipped when the request escalates into weighted failover,
+and the other way round. It is written at reservation time, in `_reserved_within_quota`, next to the
+refund stamp, so there is one write site and the generic retry machinery is untouched. Retries,
+weighted failover and cross-group fallbacks all read the same list
+
+A deviation from this phase's own plan, which said to make weighted failover the default for a quota
+pool. That would not have fixed the actual defect. Weighted failover only runs after retries are
+exhausted, and the retry loop was the thing re-picking the key that just failed: it re-selects with
+the same kwargs, and most-spent-first hands back the fullest key, which is the one whose slot the
+failed attempt just spent. A 500, a connection error or a timeout does not cool that key down either,
+since `_should_cooldown_deployment` wants half the minute's requests failed over at least five of
+them. Recording the attempt fixes the retry loop, weighted failover and fallbacks at once, and does
+not inherit `max_fallbacks`
+
+Two properties worth keeping straight. Quota exhaustion stays a hard filter, because a spent key must
+never be sent to. Already-tried is soft: when every key in the pool has been tried, the pool comes
+back whole and the caller gets the provider's own error instead of a no-deployments error. And keys
+walked per request is `num_retries + 1`, 3 by default, so a pool bigger than that is walked by raising
+the existing `num_retries`. No new knob for it
+
+Costs, accepted. One more batched counter read per request, at reservation time, which the reservation
+already paid for. And `litellm/router.py` gains one `reportUnknownVariableType` and one
+`reportUnknownArgumentType`, the same cause as phase 3: `healthy_deployments` and `request_kwargs`
+there are typed `list[dict]` and `dict | None`, so anything derived from them or handed a typed
+parameter is partially unknown. Declaring the local does not help, because pyright narrows to the
+assigned type and reports the narrowed one, and folding the filter into a helper only moves the
+diagnostic from the local onto the pool argument
 
 ## Phase 5, the setup interface: not started
 

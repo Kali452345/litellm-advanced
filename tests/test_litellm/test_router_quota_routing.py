@@ -4,8 +4,9 @@ Tests for per-credential quota routing (router_settings.enable_quota_routing).
 When enabled, `rpm` / `rpd` on a deployment become hard caps rather than shuffle
 weights: a credential with nothing left in the current window is dropped before
 routing picks a deployment, the surviving pool is walked fullest credential
-first so a conversation keeps landing on the same key, and the winner's slot is
-reserved before the request goes out.
+first so a conversation keeps landing on the same key, the winner's slot is
+reserved before the request goes out, and a key that errors hands the request to
+the next key inside the same call rather than back to the caller.
 """
 
 import asyncio
@@ -19,9 +20,11 @@ from litellm import Router
 from litellm.exceptions import APIConnectionError, RateLimitError
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.router_utils.cooldown_handlers import _async_get_cooldown_deployments
+from litellm.router_utils.quota import ATTEMPTED_DEPLOYMENT_IDS_KEY
 from litellm.types.router import RouterRateLimitError
 
 MODEL = "gemini/gemini-2.5-flash"
+OTHER_PROVIDER = "openai/gpt-4o-mini"
 NEVER_HELD = 0.0
 NEVER_LANDED = APIConnectionError(message="connection refused", llm_provider="gemini", model=MODEL)
 PROVIDER_429 = RateLimitError(message="quota exceeded", llm_provider="gemini", model=MODEL)
@@ -76,8 +79,14 @@ def quota_router(*deployments: dict, quota_max_wait_seconds: float = NEVER_HELD,
     )
 
 
-async def selected_id(router: Router, model: str = "group") -> str:
-    chosen = await router.async_get_available_deployment(model=model, request_kwargs={})
+async def selected_id(router: Router, model: str = "group", *, request_kwargs: dict | None = None) -> str:
+    """
+    The deployment one request lands on.
+
+    Hand several calls the same `request_kwargs` to walk them as one request, the way
+    a retry inside `acompletion` does; the default is a fresh request every time.
+    """
+    chosen = await router.async_get_available_deployment(model=model, request_kwargs=request_kwargs or {})
     return chosen["model_info"]["id"]
 
 
@@ -310,3 +319,91 @@ async def test_a_failure_with_no_reservation_marker_refunds_nothing():
 
     with pytest.raises(RouterRateLimitError):
         await selected_id(router)
+
+
+async def test_a_failed_key_hands_the_request_to_the_next_key_in_the_same_call():
+    router = quota_router(
+        deployment("d1", api_key="k1", rpm=5, mock_response=Exception("d1 is down")),
+        deployment("d2", api_key="k2", rpm=5, mock_response="served by d2"),
+    )
+
+    response = await router.acompletion(model="group", messages=[{"role": "user", "content": "hi"}])
+
+    assert response._hidden_params["model_id"] == "d2", (
+        "the retry has to land on a key this request has not burned; ranking the pool fullest first "
+        "otherwise hands the just failed key straight back, and a 500 does not cool it down"
+    )
+    assert response.choices[0].message.content == "served by d2", "the caller must never see the failure"
+
+
+async def test_the_walk_crosses_providers_and_never_repeats_a_key_it_burned():
+    router = quota_router(
+        deployment("d1", api_key="k1", rpm=5, mock_response=Exception("d1 is down")),
+        deployment("d2", api_key="k2", rpm=5, mock_response=Exception("d2 is down")),
+        deployment("d3", api_key="k3", model=OTHER_PROVIDER, rpm=5, mock_response="served by d3"),
+    )
+
+    response = await router.acompletion(model="group", messages=[{"role": "user", "content": "hi"}])
+
+    assert response._hidden_params["model_id"] == "d3", (
+        "every key the request already tried has to stay excluded, not just the last one, and the "
+        "walk carries on into the next provider in the group"
+    )
+
+
+async def test_a_pool_that_has_been_fully_tried_surfaces_the_providers_error():
+    router = quota_router(
+        deployment("d1", api_key="k1", rpm=5, mock_response=Exception("d1 is down")),
+        deployment("d2", api_key="k2", rpm=5, mock_response=Exception("d2 is down")),
+    )
+
+    with pytest.raises(litellm.InternalServerError):
+        await router.acompletion(model="group", messages=[{"role": "user", "content": "hi"}])
+
+
+async def test_the_retry_is_never_handed_a_key_whose_window_is_spent():
+    router = quota_router(
+        deployment("capped", api_key="k1", rpm=1),
+        deployment("uncapped", api_key="k2"),
+    )
+    one_request: dict = {"metadata": {}}
+
+    picks = [await selected_id(router, request_kwargs=one_request) for _ in range(3)]
+
+    assert picks == ["capped", "uncapped", "uncapped"], (
+        "already tried is soft so a request whose whole pool is tried still goes out, but a spent "
+        "window stays a hard cap, so the third attempt must not fall back onto the capped key"
+    )
+
+
+async def test_a_pin_is_never_offered_the_key_the_request_just_failed_on(monkeypatch: pytest.MonkeyPatch):
+    pin = PinsToTheFirstCandidate()
+    monkeypatch.setattr(litellm, "callbacks", [pin])
+    router = quota_router(
+        deployment("d1", api_key="k1", rpm=5),
+        deployment("d2", api_key="k2", rpm=5),
+    )
+    one_request: dict = {"metadata": {}}
+
+    assert await selected_id(router, request_kwargs=one_request) == "d1"
+    assert await selected_id(router, request_kwargs=one_request) == "d2", (
+        "a filter that narrows the group to one deployment has to be handed the untried keys, or it "
+        "pins the key that just failed and the retry repeats it"
+    )
+
+    assert pin.offered == [("d1", "d2"), ("d2",)]
+
+
+async def test_the_same_request_filter_stays_out_of_a_router_that_is_not_quota_routed():
+    router = Router(
+        model_list=[
+            deployment("d1", api_key="k1", order=1),
+            deployment("d2", api_key="k2", order=2),
+        ],
+    )
+    already_failed_over: dict = {"metadata": {ATTEMPTED_DEPLOYMENT_IDS_KEY: ["d1"]}}
+
+    assert await selected_id(router, request_kwargs=already_failed_over) == "d1", (
+        "weighted failover enforces its own exclusions hard, further down the pipeline, so softening "
+        "them here would let its retry re-pick the deployment it just excluded"
+    )

@@ -15,9 +15,12 @@ from litellm.router_utils.quota.enforcement import (
     warn_on_unenforced_quotas,
 )
 from litellm.router_utils.quota.reservation import (
+    ATTEMPTED_DEPLOYMENT_IDS_KEY,
     QUOTA_RESERVED_AT_KEY,
     Reservation,
+    mark_attempted_deployment,
     mark_reservation,
+    read_attempted_deployment_ids,
     read_reservation,
     request_never_reached_provider,
 )
@@ -39,6 +42,7 @@ from litellm.router_utils.quota.window import (
 )
 
 __all__ = (
+    "ATTEMPTED_DEPLOYMENT_IDS_KEY",
     "DEFAULT_QUOTA_SCOPE_MODE",
     "DEFAULT_QUOTA_TIMEZONE",
     "NOTHING_SPENT",
@@ -59,8 +63,10 @@ __all__ = (
     "build_descriptors",
     "counter_key",
     "day_window",
+    "mark_attempted_deployment",
     "mark_reservation",
     "minute_window",
+    "read_attempted_deployment_ids",
     "read_reservation",
     "request_never_reached_provider",
     "resolve_quota_scope",

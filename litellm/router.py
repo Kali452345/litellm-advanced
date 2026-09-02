@@ -176,7 +176,9 @@ from litellm.router_utils.quota import (
     AtomicWindowCounter,
     QuotaAvailability,
     QuotaEnforcer,
+    mark_attempted_deployment,
     mark_reservation,
+    read_attempted_deployment_ids,
     read_reservation,
     request_never_reached_provider,
     warn_on_unenforced_quotas,
@@ -1580,7 +1582,8 @@ class Router:
         free tier degrades into rotation rather than into 429s.
 
         The granted slot is stamped onto the request so its failure callback can
-        hand the slot back if the call never reaches the provider.
+        hand the slot back if the call never reaches the provider, and the key it
+        was taken on is recorded so a retry inside this request lands elsewhere.
         """
         if self.quota_enforcer is None or selected is None:
             return selected
@@ -1588,7 +1591,20 @@ class Router:
         reserved: Final = await self.quota_enforcer.reserve_first_available(selected, candidates)
         if reserved is not None:
             mark_reservation(request_kwargs, reserved_at=reserved_at)
+            mark_attempted_deployment(request_kwargs, deployment=reserved)
         return reserved
+
+    def _deployment_ids_already_tried(self, request_kwargs: Mapping[str, object] | None) -> frozenset[str]:
+        """
+        The keys this request has already taken a quota slot on.
+
+        Empty unless quota routing is on: the marker doubles as weighted failover's
+        accumulator, and that walk already enforces its own exclusions hard, further
+        down, so softening them here would let it re-pick the key it just excluded.
+        """
+        if self.quota_enforcer is None or request_kwargs is None:
+            return frozenset()
+        return read_attempted_deployment_ids(request_kwargs)
 
     async def _quota_reset_seconds(self, candidates: Sequence[Mapping[str, object]]) -> int | None:
         """When the whole pool is spent, the second it frees up, for the retry-after."""
@@ -11991,9 +12007,20 @@ class Router:
             healthy_deployments, excluded_deployment_ids=quota.exhausted_deployment_ids
         )
 
+        ## SAME-REQUEST FAILOVER ## -> a retry has to land on a key this request has not
+        ## already burned; most-spent-first would otherwise hand the just failed key
+        ## straight back, since spending a slot on it is what made it the fullest. Soft on
+        ## purpose: once every key has been tried, the caller gets the provider's error.
+        untried: Final = (
+            _get_excluded_filtered_deployments(
+                with_quota_room, excluded_deployment_ids=self._deployment_ids_already_tried(request_kwargs)
+            )
+            or with_quota_room
+        )
+
         healthy_deployments = await self.async_callback_filter_deployments(
             model=model,
-            healthy_deployments=with_quota_room,
+            healthy_deployments=untried,
             messages=(cast(list[AllMessageValues], messages) if messages is not None else None),
             request_kwargs=request_kwargs,
             parent_otel_span=parent_otel_span,

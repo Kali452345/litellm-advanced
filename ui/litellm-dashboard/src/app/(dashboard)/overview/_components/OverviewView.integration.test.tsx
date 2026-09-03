@@ -87,6 +87,7 @@ const meter = (kind: WindowUsage["kind"], used: number, limit: number, resetIn: 
 
 const USAGE: Usage = {
   enforced: true,
+  max_wait_seconds: 75,
   pools: [
     {
       model_name: "flash",
@@ -296,7 +297,7 @@ describe("OverviewView", () => {
 
   it("says the range recorded nothing rather than drawing an empty ranking", async () => {
     served.days = [];
-    served.usage = { enforced: false, pools: [] };
+    served.usage = { enforced: false, max_wait_seconds: 75, pools: [] };
     renderView();
 
     expect(await screen.findByText("No model served a request in this range.")).toBeInTheDocument();

@@ -193,8 +193,8 @@ const enforcementItem = (quota: QuotaOverview): AttentionItem | null => {
     id: "quota-not-enforced",
     tone: "warning",
     title: "Per-key caps are not being counted",
-    detail: `${formatCount(metered)} ${metered === 1 ? "key carries" : "keys carry"} a per-minute or per-day cap, but this router was built without quota routing, so nothing counts against those caps and the provider's own limit is all that stops a request.`,
-    action: { label: "See the pools", page: "quota" },
+    detail: `${formatCount(metered)} ${metered === 1 ? "key carries" : "keys carry"} a per-minute or per-day cap, but nothing counts against those caps, so the provider's own limit is all that stops a request.`,
+    action: { label: "Turn enforcement on", page: "quota" },
   };
 };
 

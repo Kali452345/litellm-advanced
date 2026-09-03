@@ -30,6 +30,13 @@ const pool = (over: Partial<PoolQuotaUsage> = {}): PoolQuotaUsage => ({
   ...over,
 });
 
+const usage = (over: Partial<ModelQuotaUsage> = {}): ModelQuotaUsage => ({
+  enforced: true,
+  max_wait_seconds: 75,
+  pools: [pool()],
+  ...over,
+});
+
 describe("formatCountdown", () => {
   it.each([
     { seconds: 0, expected: "now" },
@@ -169,12 +176,11 @@ describe("toPoolView", () => {
 
 describe("toPoolViews", () => {
   it("orders pools by name so the list does not reshuffle between polls", () => {
-    const usage: ModelQuotaUsage = {
-      enforced: true,
+    const ordered = usage({
       pools: [pool({ model_name: "sonnet" }), pool({ model_name: "flash" }), pool({ model_name: "haiku" })],
-    };
+    });
 
-    expect(toPoolViews(usage).map((p) => p.modelName)).toEqual(["flash", "haiku", "sonnet"]);
+    expect(toPoolViews(ordered).map((p) => p.modelName)).toEqual(["flash", "haiku", "sonnet"]);
   });
 
   it("renders nothing rather than throwing when usage has not loaded", () => {
@@ -184,8 +190,7 @@ describe("toPoolViews", () => {
 
 describe("toOverview", () => {
   it("totals keys and availability across every pool", () => {
-    const usage: ModelQuotaUsage = {
-      enforced: true,
+    const totals = usage({
       pools: [
         pool({
           model_name: "flash",
@@ -194,10 +199,11 @@ describe("toOverview", () => {
         }),
         pool({ model_name: "sonnet", keys: [key({ model_id: "c" }), key({ model_id: "d", windows: [] })] }),
       ],
-    };
+    });
 
-    expect(toOverview(usage, toPoolViews(usage))).toEqual({
+    expect(toOverview(totals, toPoolViews(totals))).toEqual({
       enforced: true,
+      maxWaitSeconds: 75,
       poolCount: 2,
       keyCount: 4,
       availableKeyCount: 2,
@@ -207,8 +213,16 @@ describe("toOverview", () => {
   });
 
   it("reports enforcement off when the router was built without quota routing", () => {
-    const usage: ModelQuotaUsage = { enforced: false, pools: [pool()] };
+    const unenforced = usage({ enforced: false });
 
-    expect(toOverview(usage, toPoolViews(usage)).enforced).toBe(false);
+    expect(toOverview(unenforced, toPoolViews(unenforced)).enforced).toBe(false);
+  });
+
+  it("carries the hold budget the router is running with, so the control shows the live value", () => {
+    expect(toOverview(usage({ max_wait_seconds: 12.5 }), []).maxWaitSeconds).toBe(12.5);
+  });
+
+  it("has no budget to show before the first poll answers", () => {
+    expect(toOverview(undefined, []).maxWaitSeconds).toBeNull();
   });
 });

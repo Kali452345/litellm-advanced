@@ -37,6 +37,7 @@ export interface PoolView {
 
 export interface QuotaOverview {
   enforced: boolean;
+  maxWaitSeconds: number | null;
   poolCount: number;
   keyCount: number;
   availableKeyCount: number;
@@ -136,6 +137,7 @@ export const toPoolViews = (usage: ModelQuotaUsage | undefined): PoolView[] =>
 
 export const toOverview = (usage: ModelQuotaUsage | undefined, pools: PoolView[]): QuotaOverview => ({
   enforced: usage?.enforced ?? false,
+  maxWaitSeconds: usage?.max_wait_seconds ?? null,
   poolCount: pools.length,
   keyCount: pools.reduce((total, pool) => total + pool.keyCount, 0),
   availableKeyCount: pools.reduce((total, pool) => total + pool.availableKeyCount, 0),

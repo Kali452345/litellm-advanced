@@ -15,9 +15,9 @@ export const quotaUsageKeys = createQueryKeys("quotaUsage");
 /** A minute window rolls over within a minute, so a slower poll shows counts that already reset. */
 export const QUOTA_POLL_MS = 10_000;
 
-const fetchQuotaUsage = async (): Promise<ModelQuotaUsage> => {
+const fetchQuotaUsage = async (): Promise<ModelQuotaUsage | undefined> => {
   const { data } = await fetchClient.GET("/model/quota/usage");
-  return data ?? { enforced: false, pools: [] };
+  return data;
 };
 
 /**
@@ -30,7 +30,7 @@ const fetchQuotaUsage = async (): Promise<ModelQuotaUsage> => {
 export const useQuotaUsage = (pollMs: number = QUOTA_POLL_MS) => {
   const { accessToken, userRole } = useAuthorized();
 
-  return useQuery<ModelQuotaUsage>({
+  return useQuery<ModelQuotaUsage | undefined>({
     queryKey: quotaUsageKeys.list({}),
     queryFn: fetchQuotaUsage,
     enabled: Boolean(accessToken) && all_admin_roles.includes(userRole || ""),

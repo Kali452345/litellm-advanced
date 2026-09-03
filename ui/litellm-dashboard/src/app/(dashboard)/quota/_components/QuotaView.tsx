@@ -14,6 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { UiLoadingSpinner } from "@/components/ui/ui-loading-spinner";
 import { all_admin_roles } from "@/utils/roles";
 
+import { QuotaEnforcementCard } from "./QuotaEnforcementCard";
 import { QuotaPoolCard } from "./QuotaPoolCard";
 
 function PoolList({ pools, isLoading }: { pools: readonly PoolView[]; isLoading: boolean }) {
@@ -97,6 +98,8 @@ export function QuotaView() {
           info="A key with no rpm or rpd limit set is never held back, so the provider's own rate limit is the only thing stopping it."
         />
       </div>
+
+      <QuotaEnforcementCard live={{ enforced: overview.enforced, maxWaitSeconds: overview.maxWaitSeconds }} />
 
       <PoolList pools={pools} isLoading={isLoading} />
     </div>

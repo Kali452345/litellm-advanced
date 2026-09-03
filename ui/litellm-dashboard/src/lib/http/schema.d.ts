@@ -31566,6 +31566,11 @@ export interface components {
              */
             enforced: boolean;
             /**
+             * Max Wait Seconds
+             * @description How long a request is held when every key behind a model is spent. The live budget while enforcement is on, the default it would start with while it is off
+             */
+            max_wait_seconds: number;
+            /**
              * Pools
              * @default []
              */
@@ -37651,6 +37656,8 @@ export interface components {
             }[] | null;
             /** Cooldown Time */
             cooldown_time?: number | null;
+            /** Enable Quota Routing */
+            enable_quota_routing?: boolean | null;
             /** Enable Tag Filtering */
             enable_tag_filtering?: boolean | null;
             /** Fallbacks */
@@ -37663,11 +37670,8 @@ export interface components {
             model_group_affinity_config?: {
                 [key: string]: string[];
             } | null;
-            /**
-             * Model Group Alias
-             * @default {}
-             */
-            model_group_alias: {
+            /** Model Group Alias */
+            model_group_alias?: {
                 [key: string]: string | {
                     [key: string]: unknown;
                 };
@@ -37678,6 +37682,8 @@ export interface components {
             } | null;
             /** Num Retries */
             num_retries?: number | null;
+            /** Quota Max Wait Seconds */
+            quota_max_wait_seconds?: number | null;
             /** Retry After */
             retry_after?: number | null;
             retry_policy?: components["schemas"]["RetryPolicy"] | null;

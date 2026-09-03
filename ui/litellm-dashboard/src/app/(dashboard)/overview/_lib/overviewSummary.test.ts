@@ -34,6 +34,7 @@ const pool = (over: Partial<PoolView> = {}): PoolView => {
 
 const overview = (over: Partial<QuotaOverview> = {}): QuotaOverview => ({
   enforced: true,
+  maxWaitSeconds: 75,
   poolCount: 1,
   keyCount: 1,
   availableKeyCount: 1,
@@ -269,8 +270,10 @@ describe("attentionItems", () => {
       tone: "warning",
       title: "Per-key caps are not being counted",
     });
-    expect(items[0].detail).toContain("3 keys carry a per-minute or per-day cap, but this router was built without");
-    expect(items[0].action).toEqual({ label: "See the pools", page: "quota" });
+    expect(items[0].detail).toContain(
+      "3 keys carry a per-minute or per-day cap, but nothing counts against those caps",
+    );
+    expect(items[0].action).toEqual({ label: "Turn enforcement on", page: "quota" });
   });
 
   it("keeps quiet about enforcement when no key carries a cap at all", () => {

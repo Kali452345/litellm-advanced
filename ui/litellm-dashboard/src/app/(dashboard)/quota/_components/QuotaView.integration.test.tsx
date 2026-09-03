@@ -1,15 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { components } from "@/lib/http/schema";
 
-const { GET, session } = vi.hoisted(() => ({
+const { GET, POST, session, toast } = vi.hoisted(() => ({
   GET: vi.fn(),
+  POST: vi.fn(),
   session: { userRole: "Admin" },
+  toast: { success: vi.fn(), fromError: vi.fn() },
 }));
 
-vi.mock("@/lib/http/api", () => ({ fetchClient: { GET } }));
+vi.mock("@/lib/http/api", () => ({ fetchClient: { GET, POST } }));
+vi.mock("@/lib/toast", () => ({ toast }));
 vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
   default: () => ({ accessToken: "sk-test", userRole: session.userRole, userId: "u-42" }),
 }));
@@ -53,6 +57,7 @@ const FLASH_POOL: Usage["pools"][number] = {
 
 const USAGE: Usage = {
   enforced: true,
+  max_wait_seconds: 75,
   pools: [
     {
       model_name: "pro",
@@ -86,6 +91,12 @@ const renderView = () => {
   );
 };
 
+const setup = () => userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+
+const enforceSwitch = () => screen.getByRole("switch", { name: "Enforce per-key quotas" });
+const holdField = () => screen.getByLabelText("Hold budget (seconds)");
+const saveButton = () => screen.getByRole("button", { name: "Save" });
+
 const pool = (modelName: string) => screen.getByTestId(`quota-pool-${modelName}`);
 const keyRow = (modelId: string) => screen.getByTestId(`quota-key-${modelId}`);
 
@@ -97,6 +108,7 @@ describe("QuotaView", () => {
     vi.clearAllMocks();
     session.userRole = "Admin";
     GET.mockResolvedValue({ data: USAGE });
+    POST.mockResolvedValue({ data: {} });
   });
 
   afterEach(() => {
@@ -227,10 +239,83 @@ describe("QuotaView", () => {
   });
 
   it("points an operator with no pools at where a key gets added", async () => {
-    GET.mockResolvedValue({ data: { enforced: true, pools: [] } });
+    GET.mockResolvedValue({ data: { enforced: true, max_wait_seconds: 75, pools: [] } });
     renderView();
 
     expect(await screen.findByText(/Add one under Provider Keys/)).toBeInTheDocument();
     expectSummary("pools", "0");
+  });
+
+  it("turns rotation on from the page, sending the hold budget with the flag", async () => {
+    GET.mockResolvedValue({ data: { ...USAGE, enforced: false } });
+    const user = setup();
+    renderView();
+
+    await screen.findByText("Quota not enforced");
+    await user.click(enforceSwitch());
+    fireEvent.change(holdField(), { target: { value: "30" } });
+    GET.mockResolvedValue({ data: { ...USAGE, enforced: true, max_wait_seconds: 30 } });
+    await user.click(saveButton());
+
+    expect(POST).toHaveBeenCalledWith("/config/update", {
+      body: { router_settings: { enable_quota_routing: true, quota_max_wait_seconds: 30 } },
+    });
+    expect(await screen.findByText("Quota enforced")).toBeInTheDocument();
+    expect(holdField()).toHaveValue("30");
+  });
+
+  it("saves a new hold budget while enforcement stays on", async () => {
+    const user = setup();
+    renderView();
+
+    await screen.findByDisplayValue("75");
+    fireEvent.change(holdField(), { target: { value: "12.5" } });
+    await user.click(saveButton());
+
+    expect(POST).toHaveBeenCalledWith("/config/update", {
+      body: { router_settings: { enable_quota_routing: true, quota_max_wait_seconds: 12.5 } },
+    });
+    expect(toast.success).toHaveBeenCalledWith("Quota routing on, holding a spent request up to 12.5s");
+  });
+
+  it("keeps the running budget when enforcement is turned off", async () => {
+    const user = setup();
+    renderView();
+
+    await screen.findByDisplayValue("75");
+    await user.click(enforceSwitch());
+
+    expect(holdField()).toBeDisabled();
+    await user.click(saveButton());
+
+    expect(POST).toHaveBeenCalledWith("/config/update", {
+      body: { router_settings: { enable_quota_routing: false, quota_max_wait_seconds: 75 } },
+    });
+  });
+
+  it("offers no save until something changes, and refuses a budget that is not a count of seconds", async () => {
+    renderView();
+
+    await screen.findByDisplayValue("75");
+    expect(saveButton()).toBeDisabled();
+
+    fireEvent.change(holdField(), { target: { value: "a minute" } });
+
+    expect(screen.getByText("Seconds only, like 75 or 12.5.")).toBeInTheDocument();
+    expect(saveButton()).toBeDisabled();
+    expect(POST).not.toHaveBeenCalled();
+  });
+
+  it("tells the operator when the save was rejected instead of pretending it landed", async () => {
+    POST.mockRejectedValue(new Error("403 Forbidden"));
+    const user = setup();
+    renderView();
+
+    await screen.findByDisplayValue("75");
+    fireEvent.change(holdField(), { target: { value: "20" } });
+    await user.click(saveButton());
+
+    expect(toast.fromError).toHaveBeenCalled();
+    expect(holdField()).toHaveValue("20");
   });
 });

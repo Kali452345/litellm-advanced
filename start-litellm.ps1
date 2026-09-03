@@ -5,14 +5,17 @@
 .DESCRIPTION
     Reads .env for LITELLM_MASTER_KEY and DATABASE_URL, puts the Prisma CLI and this
     checkout's litellm-proxy-extras where the proxy can find them so migrations actually
-    run, generates the Prisma client on first use, then runs the proxy out of the working
-    tree rather than an installed litellm. Prints the dashboard link plus what an agent
-    harness needs to point at it. Output is teed to litellm.log.
+    run, generates the Prisma client on first use, rebuilds the Admin UI when the checkout
+    is ahead of the last build, then runs the proxy out of the working tree rather than an
+    installed litellm. Prints the dashboard link plus what an agent harness needs to point
+    at it. Output is teed to litellm.log.
 
 .EXAMPLE
     .\start-litellm.ps1
 .EXAMPLE
     .\start-litellm.ps1 -Port 4001 -DetailedDebug
+.EXAMPLE
+    .\start-litellm.ps1 -SkipUiBuild
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +23,8 @@ param(
     [string]$Config = 'config.yaml',
     [string]$Python = 'python',
     [switch]$DetailedDebug,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$SkipUiBuild
 )
 
 Set-StrictMode -Version Latest
@@ -75,6 +79,48 @@ function Invoke-Native {
     return $LASTEXITCODE
 }
 
+function Get-NewestWriteUtc {
+    param([string]$Dashboard)
+
+    $candidates = @(
+        @('src', 'public') |
+            ForEach-Object { Join-Path $Dashboard $_ } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -File -Force }
+        @('package.json', 'package-lock.json', 'next.config.mjs', 'postcss.config.js', 'tsconfig.json', 'components.json') |
+            ForEach-Object { Join-Path $Dashboard $_ } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            ForEach-Object { Get-Item -LiteralPath $_ }
+    )
+
+    $newest = $candidates | Sort-Object -Property LastWriteTimeUtc -Descending | Select-Object -First 1
+    if (-not $newest) { return [datetime]::MinValue }
+    return $newest.LastWriteTimeUtc
+}
+
+function Build-Dashboard {
+    param([string]$Dashboard)
+
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Host ''
+        Write-Host 'The Admin UI is behind this checkout and npm is not on PATH to rebuild it' -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host ''
+    Write-Host 'Building the Admin UI, which takes a couple of minutes' -ForegroundColor Yellow
+
+    Push-Location $Dashboard
+    try {
+        if (-not (Test-Path -LiteralPath (Join-Path $Dashboard 'node_modules'))) {
+            if ((Invoke-Native 'npm' @('ci')) -ne 0) { return $false }
+        }
+        return (Invoke-Native 'npm' @('run', 'build')) -eq 0
+    } finally {
+        Pop-Location
+    }
+}
+
 $scriptDirs = @(
     Invoke-Native $Python @('-c', "import sysconfig; print(sysconfig.get_path('scripts')); print(sysconfig.get_path('scripts', 'nt_user'))")
 )
@@ -105,8 +151,35 @@ if ((Invoke-Native $Python @('-c', 'from prisma import Prisma') -Quiet) -ne 0) {
     }
 }
 
-$builtUi = Join-Path $repo 'ui\litellm-dashboard\out'
-if (Test-Path -LiteralPath (Join-Path $builtUi 'index.html')) { $env:LITELLM_UI_PATH = $builtUi }
+$dashboard = Join-Path $repo 'ui\litellm-dashboard'
+$builtUi = Join-Path $dashboard 'out'
+$builtIndex = Join-Path $builtUi 'index.html'
+
+$stale = if (Test-Path -LiteralPath $builtIndex) {
+    (Get-Item -LiteralPath $builtIndex).LastWriteTimeUtc -lt (Get-NewestWriteUtc $dashboard)
+} else {
+    $true
+}
+
+if ($stale -and -not $SkipUiBuild) {
+    if (-not (Build-Dashboard $dashboard)) {
+        Write-Host ''
+        Write-Host 'The Admin UI did not build, so the dashboard here would not be the one in this checkout' -ForegroundColor Red
+        Write-Host 'Fix the build, or re-run with -SkipUiBuild to boot the proxy against whatever was built last'
+        exit 1
+    }
+} elseif ($stale) {
+    Write-Host ''
+    Write-Host 'Skipping the Admin UI build, so the dashboard is behind this checkout' -ForegroundColor Yellow
+}
+
+if (Test-Path -LiteralPath $builtIndex) {
+    $env:LITELLM_UI_PATH = $builtUi
+} else {
+    Write-Host ''
+    Write-Host 'Nothing is built in ui\litellm-dashboard\out' -ForegroundColor Yellow
+    Write-Host 'The dashboard below is the export that shipped with the package, not this checkout'
+}
 
 $base = "http://127.0.0.1:$Port"
 $log = Join-Path $repo 'litellm.log'

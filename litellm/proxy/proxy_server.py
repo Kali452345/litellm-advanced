@@ -521,6 +521,9 @@ from litellm.proxy.management_endpoints.organization_endpoints import (
 from litellm.proxy.management_endpoints.provider_profile_endpoints import (
     router as provider_profile_router,
 )
+from litellm.proxy.management_endpoints.provider_rate_limit_endpoints import (
+    router as provider_rate_limit_router,
+)
 from litellm.proxy.management_endpoints.router_settings_endpoints import (
     router as router_settings_router,
 )
@@ -17971,6 +17974,7 @@ app.include_router(budget_management_router)
 app.include_router(model_management_router)
 app.include_router(model_quota_router)
 app.include_router(provider_profile_router)
+app.include_router(provider_rate_limit_router)
 app.include_router(model_access_group_management_router)
 app.include_router(auto_router_management_router)
 app.include_router(tag_management_router)

@@ -12128,6 +12128,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/provider/rate_limit/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Probe Provider Rate Limit
+         * @description Send requests to one api key until the provider rate limits it, and report how many it accepted
+         */
+        post: operations["probe_provider_rate_limit_provider_rate_limit_probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/public/agent_hub": {
         parameters: {
             query?: never;
@@ -22721,7 +22741,7 @@ export interface components {
         AddProviderKeyRequest: {
             /**
              * Api Base
-             * @description The new key's base url, defaulting to the provider's
+             * @description The new key's base url. Omit it to inherit the provider's, or send null for the provider's own default, which is what a provider reached at both its own url and a custom one needs
              */
             api_base?: string | null;
             /**
@@ -33809,6 +33829,35 @@ export interface components {
              */
             seconds_until_room?: number | null;
         };
+        /** ProbeRateLimitRequest */
+        ProbeRateLimitRequest: {
+            /**
+             * Api Base
+             * @description Where to reach it, or null for the provider's own url
+             */
+            api_base?: string | null;
+            /**
+             * Api Key
+             * @description The key to measure
+             */
+            api_key: string;
+            /**
+             * Api Version
+             * @description Api version, for the providers that need one
+             */
+            api_version?: string | null;
+            /**
+             * Max Requests
+             * @description Give up after this many accepted requests, so a key with a high cap cannot run forever
+             * @default 60
+             */
+            max_requests: number;
+            /**
+             * Model
+             * @description The provider's own model string, as /provider/profiles reports it
+             */
+            model: string;
+        };
         /** Prompt */
         Prompt: {
             litellm_params: components["schemas"]["PromptLiteLLMParams"];
@@ -34248,6 +34297,41 @@ export interface components {
             timezone: string;
             /** Used */
             used: number;
+        };
+        /** RateLimitProbeResponse */
+        RateLimitProbeResponse: {
+            /**
+             * Accepted
+             * @description Requests the provider accepted, which is its per-minute cap when the outcome is rate_limited and a floor under it otherwise
+             */
+            accepted: number;
+            /**
+             * Message
+             * @description What the provider said, with the probed key redacted out
+             */
+            message?: string | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "rate_limited" | "already_limited" | "ceiling_reached" | "deadline_reached" | "refused";
+            /**
+             * Rate Limit Type
+             * @description Which ceiling the provider names, when it names one: requests, tokens or concurrent_requests
+             */
+            rate_limit_type?: string | null;
+            /**
+             * Requests Sent
+             * @description Requests the probe spent in total, including the refused ones
+             */
+            requests_sent: number;
+            /**
+             * Retry After Seconds
+             * @description What the provider's retry-after asked for, which tells a per-minute cap from a per-day one
+             */
+            retry_after_seconds?: number | null;
+            /** Seconds Elapsed */
+            seconds_elapsed: number;
         };
         /** RawRequestTypedDict */
         RawRequestTypedDict: {
@@ -54658,6 +54742,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderProfilesResponse"];
+                };
+            };
+        };
+    };
+    probe_provider_rate_limit_provider_rate_limit_probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProbeRateLimitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimitProbeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

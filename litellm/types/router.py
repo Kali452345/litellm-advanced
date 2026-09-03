@@ -129,9 +129,11 @@ class UpdateRouterConfig(BaseModel):
     retry_after: float | None = None
     fallbacks: list[dict] | None = None
     context_window_fallbacks: list[dict] | None = None
-    model_group_alias: dict[str, str | dict] | None = {}
+    model_group_alias: dict[str, str | dict] | None = None
     enable_tag_filtering: bool | None = None
     tag_routing_prefix: str | None = None
+    enable_quota_routing: bool | None = None
+    quota_max_wait_seconds: float | None = None
 
     model_config = ConfigDict(protected_namespaces=())
 

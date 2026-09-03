@@ -26,6 +26,7 @@ from typing import Annotated, Final, Never
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from litellm.constants import DEFAULT_QUOTA_MAX_WAIT_SECONDS
 from litellm.proxy._types import (
     CommonProxyErrors,
     UserAPIKeyAuth,
@@ -84,6 +85,10 @@ class ModelQuotaUsageResponse(BaseModel):
         description="Whether the router was built with enable_quota_routing. False means the caps below are "
         "reported as configured but nothing counts against them, so every count stays at zero"
     )
+    max_wait_seconds: float = Field(
+        description="How long a request is held when every key behind a model is spent. The live budget while "
+        "enforcement is on, the default it would start with while it is off"
+    )
     pools: tuple[PoolQuotaUsage, ...] = ()
 
 
@@ -119,6 +124,7 @@ def derive_quota_usage(
     deployments: Sequence[Mapping[str, object]],
     usage: Sequence[DeploymentQuotaUsage],
     enforced: bool,
+    max_wait_seconds: float = DEFAULT_QUOTA_MAX_WAIT_SECONDS,
 ) -> ModelQuotaUsageResponse:
     """
     Group per-deployment counter reads into one entry per model name.
@@ -135,6 +141,7 @@ def derive_quota_usage(
     names: Final = tuple(dict.fromkeys(member.model_name for member in members))
     return ModelQuotaUsageResponse(
         enforced=enforced,
+        max_wait_seconds=max_wait_seconds,
         pools=tuple(
             _pool(model_name=name, keys=tuple(member.key for member in members if member.model_name == name))
             for name in names
@@ -222,7 +229,8 @@ async def quota_usage_of(live: Router) -> ModelQuotaUsageResponse:
 
     A router without quota routing has no enforcer, so the counters are read through
     one built here. The configured caps still come back, which is how an operator sees
-    that the zeros are the flag being off rather than a pool nobody has used yet.
+    that the zeros are the flag being off rather than a pool nobody has used yet, and
+    the hold budget that comes back is the one enforcement would start with.
     """
     deployments: Final = _UNTYPED_MODEL_LIST_ADAPTER.validate_python(live.model_list or ())
     reader: Final = live.quota_enforcer or QuotaEnforcer(AtomicWindowCounter(live.cache))
@@ -230,6 +238,7 @@ async def quota_usage_of(live: Router) -> ModelQuotaUsageResponse:
         deployments=deployments,
         usage=await reader.usage(deployments),
         enforced=live.quota_enforcer is not None,
+        max_wait_seconds=reader.max_wait_seconds,
     )
 
 

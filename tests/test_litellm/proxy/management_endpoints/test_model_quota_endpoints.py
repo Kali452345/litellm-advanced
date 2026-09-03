@@ -3,6 +3,7 @@ import datetime as dt
 import pytest
 from fastapi import HTTPException
 
+from litellm.constants import DEFAULT_QUOTA_MAX_WAIT_SECONDS
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.management_endpoints.model_quota_endpoints import (
     derive_quota_usage,
@@ -189,6 +190,24 @@ async def test_a_router_without_quota_routing_still_reports_its_configured_caps(
         ("rpm", 5, 0),
         ("rpd", 100, 0),
     )
+
+
+async def test_the_hold_budget_reported_is_the_one_the_live_router_is_using():
+    live = Router(model_list=[deployment("d1", rpm=5)], enable_quota_routing=True, quota_max_wait_seconds=12.5)
+
+    reported = await quota_usage_of(live)
+
+    assert reported.max_wait_seconds == 12.5, (
+        "the panel that edits this budget reads it back from here, so a stale number would show the wrong value"
+    )
+
+
+async def test_a_router_without_quota_routing_reports_the_budget_enforcement_would_start_with():
+    live = Router(model_list=[deployment("d1", rpm=5)])
+
+    reported = await quota_usage_of(live)
+
+    assert reported.max_wait_seconds == DEFAULT_QUOTA_MAX_WAIT_SECONDS
 
 
 async def test_a_day_boundary_is_reported_from_the_configured_zone():

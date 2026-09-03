@@ -10,8 +10,11 @@ the next key inside the same call rather than back to the caller.
 """
 
 import asyncio
+import json
 import time
 from collections import Counter
+from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -483,3 +486,90 @@ async def test_a_quota_setting_that_cannot_be_read_is_ignored_rather_than_failin
     assert await selected_id(router) == "d1"
     with pytest.raises(RouterRateLimitError):
         await selected_id(router)
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfigRow:
+    param_name: str
+    param_value: dict
+
+
+class _FakeConfigTable:
+    """A LiteLLM_Config table that parses the json string /config/update writes, the way prisma does."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, _ConfigRow] = {}
+
+    async def find_first(self, where: dict) -> _ConfigRow | None:
+        return self.rows.get(where["param_name"])
+
+    async def upsert(self, where: dict, data: dict) -> None:
+        name = where["param_name"]
+        raw = (data["update"] if name in self.rows else data["create"])["param_value"]
+        self.rows[name] = _ConfigRow(name, json.loads(raw))
+
+
+async def save_router_settings(monkeypatch: pytest.MonkeyPatch, router: Router, **settings: object) -> None:
+    """
+    One Admin UI save of router_settings, driven through the real /config/update handler.
+
+    The proxy writes the section to its config row and then applies that row to the router
+    it is already serving from, so this is the whole path a toggle on the quota page takes,
+    minus the database.
+    """
+    import litellm.proxy.proxy_server as proxy_server
+    from litellm.proxy._types import ConfigYAML, LitellmUserRoles, UserAPIKeyAuth
+    from litellm.types.router import UpdateRouterConfig
+
+    prisma_client = MagicMock()
+    prisma_client.db.litellm_config = _FakeConfigTable()
+
+    async def apply(**kwargs: object) -> None:
+        await proxy_server.proxy_config._add_router_settings_from_db_config(
+            config_data={}, llm_router=router, prisma_client=prisma_client
+        )
+
+    monkeypatch.setattr(proxy_server, "prisma_client", prisma_client)
+    monkeypatch.setattr(proxy_server, "llm_router", router)
+    monkeypatch.setattr(proxy_server.proxy_config, "add_deployment", apply)
+
+    await proxy_server.update_config(
+        config_info=ConfigYAML(router_settings=UpdateRouterConfig(**settings)),
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, api_key="sk-1234"),
+    )
+
+
+async def test_a_save_from_the_ui_turns_enforcement_on_for_a_router_that_is_already_serving(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    Nobody should have to edit config.yaml to get rotation, which is the only reason this
+    setting is in the UI at all. The request body is a closed model, so a key it does not
+    declare is dropped before the write and the caps stay shuffle weights.
+    """
+    router = Router(
+        model_list=[
+            deployment("d1", api_key="k1", rpm=1),
+            deployment("d2", api_key="k2", rpm=1),
+        ],
+    )
+
+    await save_router_settings(monkeypatch, router, enable_quota_routing=True, quota_max_wait_seconds=NEVER_HELD)
+
+    assert [await selected_id(router) for _ in range(2)] == ["d1", "d2"]
+    with pytest.raises(RouterRateLimitError):
+        await selected_id(router)
+
+
+async def test_a_hold_budget_saved_from_the_ui_is_the_one_the_quota_page_reads_back(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The panel that edits this budget reads it back off the usage endpoint, so a save that
+    never reached the running enforcer would leave the old number on screen."""
+    from litellm.proxy.management_endpoints.model_quota_endpoints import quota_usage_of
+
+    router = quota_router(deployment("d1", api_key="k1", rpm=1))
+
+    await save_router_settings(monkeypatch, router, quota_max_wait_seconds=12.5)
+
+    assert (await quota_usage_of(router)).max_wait_seconds == 12.5

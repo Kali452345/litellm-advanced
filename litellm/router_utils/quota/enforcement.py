@@ -187,6 +187,11 @@ class QuotaEnforcer:
         self._clock: Final = clock
         self._sleep: Final = sleep
 
+    @property
+    def max_wait_seconds(self) -> float:
+        """How long this enforcer will hold a request waiting for a window to roll over."""
+        return self._max_wait_seconds
+
     def now(self) -> dt.datetime:
         """The clock the counters are keyed on, for a caller that has to stamp a reservation."""
         return self._clock()

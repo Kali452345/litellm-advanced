@@ -34,6 +34,17 @@ def _install_litellm_config(mock_prisma: MagicMock) -> MagicMock:
     return table
 
 
+def _store_router_settings(table: MagicMock, settings: dict) -> None:
+    """Give the fake table a router_settings row for the merge to read."""
+    row = MagicMock()
+    row.param_value = settings
+    table.find_first = AsyncMock(return_value=row)
+
+
+def _upserted_router_settings(table: MagicMock) -> dict:
+    return json.loads(table.upsert.await_args.kwargs["data"]["update"]["param_value"])
+
+
 # ---------------------------------------------------------------------------
 # POST /config/update
 # ---------------------------------------------------------------------------
@@ -98,6 +109,40 @@ def test_config_update_no_db_error(client, auth_as, monkeypatch):
         "db" in str(response.json()).lower()
         or "connect" in str(response.json()).lower()
     )
+
+
+def test_config_update_saves_one_router_setting_without_resetting_the_others(
+    client, auth_as, mock_prisma, monkeypatch
+):
+    """A panel that saves a couple of router settings must leave the rest of the row alone.
+
+    The section is merged per key, so every key the request model fills in with a
+    non-None default rides along in the payload and overwrites what is stored, and
+    every key missing from the model is dropped before the write instead of saved.
+    """
+    from litellm.proxy import proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    table = _install_litellm_config(mock_prisma)
+    _store_router_settings(table, {"model_group_alias": {"fast": "gemini-group"}, "num_retries": 4})
+    monkeypatch.setattr(ps, "prisma_client", mock_prisma)
+    fake_proxy_config = MagicMock()
+    fake_proxy_config.add_deployment = AsyncMock()
+    monkeypatch.setattr(ps, "proxy_config", fake_proxy_config)
+
+    with auth_as(LitellmUserRoles.PROXY_ADMIN):
+        response = client.post(
+            "/config/update",
+            json={"router_settings": {"enable_quota_routing": True, "quota_max_wait_seconds": 12.5}},
+        )
+
+    assert response.status_code == 200
+    assert _upserted_router_settings(table) == {
+        "model_group_alias": {"fast": "gemini-group"},
+        "num_retries": 4,
+        "enable_quota_routing": True,
+        "quota_max_wait_seconds": 12.5,
+    }
 
 
 # ---------------------------------------------------------------------------

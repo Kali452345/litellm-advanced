@@ -90,6 +90,12 @@ class AddProviderKeyRequest(BaseModel):
     )
     rpm: int | None = Field(default=None, ge=0, description="Overrides the per-minute cap copied from the provider")
     rpd: int | None = Field(default=None, ge=0, description="Overrides the per-day cap copied from the provider")
+    quota_scope: QuotaScopeMode | None = Field(
+        default=None,
+        description="Whether the caps count per model this key serves ('credential_model') or once across all of "
+        "them ('credential'), which is what a provider metering the whole account needs. Omitted copies what the "
+        "provider's existing keys use",
+    )
 
 
 class AddedModel(BaseModel):
@@ -349,6 +355,10 @@ def plan_provider_key(
     `quota_scope_id` is deliberately not copied from them. That param is an operator
     saying several deployments share one account, so copying it onto a new key would
     count two keys against one counter and spend half of what the pool really has.
+
+    `quota_scope` is copied unless the request names one, since whether a key's caps
+    count per model or once across all of them is a fact about the provider's metering
+    rather than about the key.
     """
     parsed: Final = _parse_deployments(model_list)
     provider: Final = request.provider.strip().lower()
@@ -389,7 +399,7 @@ def _planned_deployments(
 ) -> tuple[Deployment, ...]:
     api_version: Final = _unanimous(member.params.api_version for member in members)
     custom_llm_provider: Final = _unanimous(member.params.custom_llm_provider for member in members)
-    quota_scope: Final = _unanimous_quota_scope(members)
+    quota_scope: Final = request.quota_scope or _unanimous_quota_scope(members)
     quota_reset_timezone: Final = _unanimous(member.params.quota_reset_timezone for member in members)
     return tuple(
         Deployment(

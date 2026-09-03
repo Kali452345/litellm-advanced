@@ -97,7 +97,7 @@ describe("ProviderKeysPanel", () => {
 
     await waitFor(() =>
       expect(POST).toHaveBeenCalledWith("/provider/keys", {
-        body: { provider: "gemini", api_key: "new-key", api_base: null },
+        body: { provider: "gemini", api_key: "new-key", api_base: null, quota_scope: "credential_model" },
       }),
     );
   });
@@ -113,9 +113,41 @@ describe("ProviderKeysPanel", () => {
 
     await waitFor(() =>
       expect(POST).toHaveBeenCalledWith("/provider/keys", {
-        body: { provider: "gemini", api_key: "k3", api_base: null, rpm: 8, rpd: 250 },
+        body: {
+          provider: "gemini",
+          api_key: "k3",
+          api_base: null,
+          quota_scope: "credential_model",
+          rpm: 8,
+          rpd: 250,
+        },
       }),
     );
+  });
+
+  it("sends the key metered as one account once the form says its models share an allowance", async () => {
+    const user = setup();
+    renderPanel();
+
+    fireEvent.change(await openForm(user, "gemini"), { target: { value: "k3" } });
+    await user.click(screen.getByRole("radio", { name: /Shared across models/ }));
+    await user.click(screen.getByRole("button", { name: "Add Key" }));
+
+    await waitFor(() =>
+      expect(POST).toHaveBeenCalledWith("/provider/keys", {
+        body: { provider: "gemini", api_key: "k3", api_base: null, quota_scope: "credential" },
+      }),
+    );
+  });
+
+  it("opens on the metering the provider's existing keys are already counted by", async () => {
+    const user = setup();
+    renderPanel();
+
+    fireEvent.change(await openForm(user, "groq"), { target: { value: "k2" } });
+
+    expect(screen.getByRole("radio", { name: /Shared across models/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Per model/ })).not.toBeChecked();
   });
 
   it("prefills the base url the provider is already reached at, so it is not retyped", async () => {
@@ -130,7 +162,12 @@ describe("ProviderKeysPanel", () => {
 
     await waitFor(() =>
       expect(POST).toHaveBeenCalledWith("/provider/keys", {
-        body: { provider: "groq", api_key: "k2", api_base: "https://api.groq.example.com" },
+        body: {
+          provider: "groq",
+          api_key: "k2",
+          api_base: "https://api.groq.example.com",
+          quota_scope: "credential",
+        },
       }),
     );
   });
@@ -147,7 +184,13 @@ describe("ProviderKeysPanel", () => {
 
     await waitFor(() =>
       expect(POST).toHaveBeenCalledWith("/provider/keys", {
-        body: { provider: "gemini", api_key: "k3", api_base: null, models: ["pro"] },
+        body: {
+          provider: "gemini",
+          api_key: "k3",
+          api_base: null,
+          quota_scope: "credential_model",
+          models: ["pro"],
+        },
       }),
     );
   });
@@ -162,7 +205,7 @@ describe("ProviderKeysPanel", () => {
 
     await waitFor(() =>
       expect(POST).toHaveBeenCalledWith("/provider/keys", {
-        body: { provider: "groq", api_key: "k2", api_base: null },
+        body: { provider: "groq", api_key: "k2", api_base: null, quota_scope: "credential" },
       }),
     );
   });
@@ -337,7 +380,7 @@ describe("ProviderKeysPanel", () => {
 
       await waitFor(() =>
         expect(POST).toHaveBeenLastCalledWith("/provider/keys", {
-          body: { provider: "gemini", api_key: "k3", api_base: null, rpm: 7 },
+          body: { provider: "gemini", api_key: "k3", api_base: null, quota_scope: "credential_model", rpm: 7 },
         }),
       );
     });

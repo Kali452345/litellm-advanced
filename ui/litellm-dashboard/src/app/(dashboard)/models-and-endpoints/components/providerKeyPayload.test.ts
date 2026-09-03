@@ -7,7 +7,6 @@ import {
   describeRejections,
   profileCapsSummary,
   providerKeyFormValues,
-  quotaScopeLabel,
   summarizeAddedModels,
 } from "./providerKeyPayload";
 
@@ -49,6 +48,14 @@ describe("providerKeyFormValues", () => {
   it("falls back to the whole pool when the model is not one this provider serves", () => {
     expect(providerKeyFormValues(profile(), "ultra").models).toEqual(["flash", "pro"]);
   });
+
+  it("prefills the way the provider's existing keys are metered, so the new key joins them", () => {
+    expect(providerKeyFormValues(profile({ quota_scope: "credential" })).quota_scope).toBe("credential");
+  });
+
+  it("prefills the router's per-model default where the provider's keys say nothing", () => {
+    expect(providerKeyFormValues(profile()).quota_scope).toBe("credential_model");
+  });
 });
 
 describe("buildAddProviderKeyBody", () => {
@@ -57,7 +64,18 @@ describe("buildAddProviderKeyBody", () => {
       provider: "gemini",
       api_key: "k3",
       api_base: null,
+      quota_scope: "credential_model",
     });
+  });
+
+  it("sends the metering the form is showing, so the key is not left to inherit it", () => {
+    const shared = buildAddProviderKeyBody(profile(), {
+      api_key: "k3",
+      models: ["flash", "pro"],
+      quota_scope: "credential",
+    });
+
+    expect(shared.quota_scope).toBe("credential");
   });
 
   it("sends caps as numbers, not the strings the inputs hold", () => {
@@ -194,17 +212,5 @@ describe("profileCapsSummary", () => {
 
   it("says there are no models rather than reading as an uncapped provider", () => {
     expect(profileCapsSummary([])).toBe("No models");
-  });
-});
-
-describe("quotaScopeLabel", () => {
-  it("distinguishes a cap counted per model from one the whole key shares", () => {
-    expect(quotaScopeLabel("credential")).toBe("Shared across models");
-    expect(quotaScopeLabel("credential_model")).toBe("Per model");
-  });
-
-  it("reads an unset scope as the per-model default the router applies", () => {
-    expect(quotaScopeLabel(null)).toBe("Per model");
-    expect(quotaScopeLabel(undefined)).toBe("Per model");
   });
 });

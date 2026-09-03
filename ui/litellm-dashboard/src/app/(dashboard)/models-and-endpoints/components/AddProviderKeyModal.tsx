@@ -10,7 +10,10 @@ import NumericalInput from "@/components/shared/numerical_input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useZodForm } from "@/lib/forms/useZodForm";
+import { QUOTA_SCOPE_CHOICES, type QuotaScopeMode } from "@/lib/quotaScope";
 import type {
   AddProviderKeyRequest,
   ProviderProfile,
@@ -30,6 +33,7 @@ const providerKeySchema = z.object({
   rpm: wholeRequests,
   rpd: wholeRequests,
   models: z.array(z.string()).min(1, "Pick at least one model for this key to serve"),
+  quota_scope: z.enum(["credential_model", "credential"]),
 });
 
 interface AddProviderKeyModalProps {
@@ -142,6 +146,27 @@ const AddProviderKeyModal: React.FC<AddProviderKeyModalProps> = ({
                   min={0}
                   placeholder="Same as the others"
                 />
+              )}
+            </FormField>
+
+            <FormField
+              control={form.control}
+              name="quota_scope"
+              label="How those caps are counted"
+              description="A key that serves more than one model either gets the caps once per model or once for the whole key."
+            >
+              {({ value, onChange }) => (
+                <RadioGroup value={value} onValueChange={(picked) => onChange(picked as QuotaScopeMode)}>
+                  {QUOTA_SCOPE_CHOICES.map((choice) => (
+                    <Label key={choice.value} className="items-start font-normal leading-normal">
+                      <RadioGroupItem value={choice.value} className="mt-0.5" />
+                      <span>
+                        <strong className="font-semibold">{choice.label}</strong>{" "}
+                        <span className="text-muted-foreground">{choice.description}</span>
+                      </span>
+                    </Label>
+                  ))}
+                </RadioGroup>
               )}
             </FormField>
 

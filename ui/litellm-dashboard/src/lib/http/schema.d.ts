@@ -22760,6 +22760,11 @@ export interface components {
              */
             provider: string;
             /**
+             * Quota Scope
+             * @description Whether the caps count per model this key serves ('credential_model') or once across all of them ('credential'), which is what a provider metering the whole account needs. Omitted copies what the provider's existing keys use
+             */
+            quota_scope?: ("credential" | "credential_model") | null;
+            /**
              * Rpd
              * @description Overrides the per-day cap copied from the provider
              */

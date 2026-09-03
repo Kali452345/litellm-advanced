@@ -4,6 +4,7 @@ import type {
   ProviderProfile,
   ProviderProfileModel,
 } from "@/app/(dashboard)/hooks/providerProfiles/useProviderProfiles";
+import { DEFAULT_QUOTA_SCOPE, type QuotaScopeMode } from "@/lib/quotaScope";
 
 export interface ProviderKeyFormValues {
   api_key: string;
@@ -11,6 +12,7 @@ export interface ProviderKeyFormValues {
   rpm?: string;
   rpd?: string;
   models?: string[];
+  quota_scope?: QuotaScopeMode;
 }
 
 export const providerKeyFormValues = (
@@ -25,6 +27,7 @@ export const providerKeyFormValues = (
     rpm: "",
     rpd: "",
     models: focusModel && served.includes(focusModel) ? [focusModel] : served,
+    quota_scope: profile?.quota_scope ?? DEFAULT_QUOTA_SCOPE,
   };
 };
 
@@ -35,7 +38,8 @@ const servesEveryModel = (selected: readonly string[], profile: ProviderProfile)
  * The base url is always sent, since the api reads an absent one as "copy the provider's" and a
  * null one as "the provider's own default", which is the only way to name that url for a provider
  * reached at both. `models` is left out when every model is picked, so the new key still serves a
- * model added to the provider after this page loaded.
+ * model added to the provider after this page loaded. The scope is always sent, so the key states
+ * how it is metered rather than inheriting whatever the keys beside it happen to agree on.
  */
 export const buildAddProviderKeyBody = (
   profile: ProviderProfile,
@@ -48,6 +52,7 @@ export const buildAddProviderKeyBody = (
     provider: profile.provider,
     api_key: values.api_key.trim(),
     api_base: apiBase === "" ? null : apiBase,
+    quota_scope: values.quota_scope ?? DEFAULT_QUOTA_SCOPE,
     ...(values.rpm ? { rpm: Number(values.rpm) } : {}),
     ...(values.rpd ? { rpd: Number(values.rpd) } : {}),
     ...(servesEveryModel(selected, profile) ? {} : { models: [...selected] }),
@@ -95,6 +100,3 @@ export const profileCapsSummary = (models: readonly ProviderProfileModel[]): str
   const labels = new Set(models.map((model) => capsLabel(model.rpm, model.rpd)));
   return labels.size === 1 ? [...labels][0] : "Varies by model";
 };
-
-export const quotaScopeLabel = (quotaScope: ProviderProfile["quota_scope"]): string =>
-  quotaScope === "credential" ? "Shared across models" : "Per model";

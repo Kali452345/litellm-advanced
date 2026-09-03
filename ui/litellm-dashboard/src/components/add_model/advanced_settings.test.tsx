@@ -106,4 +106,23 @@ describe("AdvancedSettings", () => {
 
     expect(await findByText("Enter a whole number of requests")).toBeInTheDocument();
   });
+
+  it("counts those caps per model until the whole key is said to share one allowance", async () => {
+    const { getByText, findByRole, getByRole } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    const perModel = await findByRole("radio", { name: /Per model/ });
+    const shared = getByRole("radio", { name: /Shared across models/ });
+    expect(perModel).toBeChecked();
+    expect(shared).not.toBeChecked();
+
+    fireEvent.click(shared);
+
+    await waitFor(() => {
+      expect(shared).toBeChecked();
+    });
+    expect(perModel).not.toBeChecked();
+  });
 });

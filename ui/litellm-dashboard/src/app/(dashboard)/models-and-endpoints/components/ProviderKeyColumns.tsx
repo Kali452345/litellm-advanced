@@ -11,7 +11,8 @@ import type {
   ProviderProfile,
   ProviderProfileModel,
 } from "@/app/(dashboard)/hooks/providerProfiles/useProviderProfiles";
-import { capsLabel, profileCapsSummary, quotaScopeLabel } from "./providerKeyPayload";
+import { capsLabel, profileCapsSummary } from "./providerKeyPayload";
+import { quotaScopeLabel } from "@/lib/quotaScope";
 
 const MAX_VISIBLE_MODELS = 3;
 

@@ -1,5 +1,7 @@
 import React from "react";
 import { MultiSelect } from "@/components/shared/MultiSelect";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { SimpleTooltip } from "@/components/ui/tooltip";
@@ -34,6 +36,7 @@ import {
   PTU_END_FIELD,
 } from "../../utils/ptuValidation";
 import { usePtuCostAttributionEnabled } from "@/app/(dashboard)/hooks/uiSettings/usePtuCostAttributionEnabled";
+import { DEFAULT_QUOTA_SCOPE, QUOTA_SCOPE_CHOICES, type QuotaScopeMode } from "@/lib/quotaScope";
 
 interface AdvancedSettingsProps {
   showAdvancedSettings: boolean;
@@ -513,6 +516,33 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                   onBlur={control.onBlur}
                   placeholder="e.g. 100"
                 />
+              )}
+            </MountedFormField>
+
+            <MountedFormField
+              name="quota_scope"
+              label={labelWithHint(
+                "How Those Caps Are Counted",
+                "Only matters when one key serves more than one model, since each of them is its own pool and the caps above are either counted for each pool on its own or once for the key across all of them.",
+              )}
+              defaultValue={DEFAULT_QUOTA_SCOPE}
+              className="mb-4"
+            >
+              {(control) => (
+                <RadioGroup
+                  value={control.value as QuotaScopeMode}
+                  onValueChange={(picked) => control.onChange(picked as QuotaScopeMode)}
+                >
+                  {QUOTA_SCOPE_CHOICES.map((choice) => (
+                    <Label key={choice.value} className="items-start font-normal leading-normal">
+                      <RadioGroupItem value={choice.value} className="mt-0.5" />
+                      <span>
+                        <strong className="font-semibold">{choice.label}</strong>{" "}
+                        <span className="text-muted-foreground">{choice.description}</span>
+                      </span>
+                    </Label>
+                  ))}
+                </RadioGroup>
               )}
             </MountedFormField>
 

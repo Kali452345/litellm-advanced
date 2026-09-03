@@ -28,7 +28,7 @@ from litellm.proxy.management_endpoints.provider_profile_endpoints import (
     list_provider_profiles,
     plan_provider_key,
 )
-from litellm.router_utils.quota import resolve_quota_scope
+from litellm.router_utils.quota import DEFAULT_QUOTA_SCOPE_MODE, resolve_quota_scope
 from litellm.types.router import Deployment
 
 
@@ -188,6 +188,58 @@ def test_the_caps_come_from_the_provider_unless_the_request_gives_its_own():
     assert (_planned(copied, "flash").litellm_params.rpm, _planned(copied, "flash").litellm_params.rpd) == (5, 100)
     assert (_planned(copied, "pro").litellm_params.rpm, _planned(copied, "pro").litellm_params.rpd) == (2, None)
     assert (_planned(overridden, "pro").litellm_params.rpm, _planned(overridden, "pro").litellm_params.rpd) == (1, 20)
+
+
+def _counted_window(deployment: Deployment) -> str:
+    """The counter key the router would meter this deployment's requests through."""
+    params = deployment.litellm_params
+    return resolve_quota_scope(
+        mode=params.quota_scope or DEFAULT_QUOTA_SCOPE_MODE,
+        litellm_model=params.model,
+        deployment_id="",
+        quota_scope_id=params.quota_scope_id,
+        api_base=params.api_base,
+        api_key=params.api_key,
+    ).key_prefix
+
+
+def test_one_key_across_several_models_is_metered_per_model_by_default():
+    """A provider that publishes a limit per model gives each of them its own allowance."""
+    plan = _plan(_POOL, provider="gemini", api_key="k3")
+
+    assert _counted_window(_planned(plan, "flash")) != _counted_window(_planned(plan, "pro"))
+
+
+def test_a_key_the_provider_meters_as_one_account_counts_its_models_into_one_window():
+    plan = _plan(_POOL, provider="gemini", api_key="k3", quota_scope="credential", rpm=5)
+
+    assert _counted_window(_planned(plan, "flash")) == _counted_window(_planned(plan, "pro"))
+    assert {deployment.litellm_params.quota_scope for deployment in plan.deployments} == {"credential"}
+
+
+def test_the_quota_scope_is_copied_from_the_provider_unless_the_request_gives_its_own():
+    pool = [
+        _entry("flash", "gemini/gemini-2.5-flash", "k1", rpm=5, quota_scope="credential"),
+        _entry("pro", "gemini/gemini-2.5-pro", "k1", rpm=5, quota_scope="credential"),
+    ]
+
+    copied = _plan(pool, provider="gemini", api_key="k2")
+    overridden = _plan(pool, provider="gemini", api_key="k3", quota_scope="credential_model")
+
+    assert {deployment.litellm_params.quota_scope for deployment in copied.deployments} == {"credential"}
+    assert {deployment.litellm_params.quota_scope for deployment in overridden.deployments} == {"credential_model"}
+    assert _counted_window(_planned(overridden, "flash")) != _counted_window(_planned(overridden, "pro"))
+
+
+def test_a_scope_the_request_does_not_name_is_not_invented_where_the_keys_disagree():
+    pool = [
+        _entry("flash", "gemini/gemini-2.5-flash", "k1", rpm=5, quota_scope="credential"),
+        _entry("pro", "gemini/gemini-2.5-pro", "k1", rpm=5, quota_scope="credential_model"),
+    ]
+
+    plan = _plan(pool, provider="gemini", api_key="k2")
+
+    assert {deployment.litellm_params.quota_scope for deployment in plan.deployments} == {None}
 
 
 def test_a_key_can_be_put_behind_some_of_the_models_only():

@@ -92,6 +92,52 @@ describe("prepareModelAddRequest", () => {
     expect(deployments![0].litellmParamsObj.rpm).toBe(0);
   });
 
+  it("puts one key behind every model it serves, so each of them becomes its own pool", async () => {
+    const formValues = {
+      model_mappings: [
+        { public_name: "flash", litellm_model: "gemini/gemini-2.5-flash" },
+        { public_name: "pro", litellm_model: "gemini/gemini-2.5-pro" },
+      ],
+      api_key: "one-free-tier-key",
+      rpm: "5",
+    };
+
+    const deployments = await prepareModelAddRequest({ ...formValues }, "token", null);
+
+    expect(deployments!.map((deployment) => deployment.modelName)).toEqual(["flash", "pro"]);
+    expect(deployments!.map((deployment) => deployment.litellmParamsObj.model)).toEqual([
+      "gemini/gemini-2.5-flash",
+      "gemini/gemini-2.5-pro",
+    ]);
+    expect(deployments!.map((deployment) => deployment.litellmParamsObj.api_key)).toEqual([
+      "one-free-tier-key",
+      "one-free-tier-key",
+    ]);
+    expect(deployments!.map((deployment) => deployment.litellmParamsObj.rpm)).toEqual([5, 5]);
+  });
+
+  it("carries the metering the form picked onto every model that key serves", async () => {
+    const scopesFor = async (quota_scope: string) => {
+      const deployments = await prepareModelAddRequest(
+        {
+          model_mappings: [
+            { public_name: "flash", litellm_model: "gemini/gemini-2.5-flash" },
+            { public_name: "pro", litellm_model: "gemini/gemini-2.5-pro" },
+          ],
+          api_key: "one-free-tier-key",
+          rpm: "5",
+          quota_scope,
+        },
+        "token",
+        null,
+      );
+      return deployments!.map((deployment) => deployment.litellmParamsObj.quota_scope);
+    };
+
+    expect(await scopesFor("credential")).toEqual(["credential", "credential"]);
+    expect(await scopesFor("credential_model")).toEqual(["credential_model", "credential_model"]);
+  });
+
   it("ignores litellm_credential_name inside LiteLLM Params JSON", async () => {
     const formValues = {
       model_mappings: [

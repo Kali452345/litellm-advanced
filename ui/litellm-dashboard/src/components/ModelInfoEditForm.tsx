@@ -7,7 +7,7 @@ import * as React from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { z } from "zod/v4";
 
-import { TagsInput } from "@/app/(dashboard)/guardrails/_components/content_filter/TagsInput";
+import { TagsInput } from "@/components/shared/TagsInput";
 import { FormField } from "@/components/shared/form/FormField";
 import { UtcDateTimeInput } from "@/components/shared/form/UtcDateTimeInput";
 import { Badge } from "@/components/ui/badge";

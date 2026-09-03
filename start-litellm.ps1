@@ -8,7 +8,8 @@
     run, generates the Prisma client on first use, rebuilds the Admin UI when the checkout
     is ahead of the last build, then runs the proxy out of the working tree rather than an
     installed litellm. Prints the dashboard link plus what an agent harness needs to point
-    at it. Output is teed to litellm.log.
+    at it. Output is teed to litellm.log. Refuses to start when the port is already served
+    or an earlier launcher still holds that log, rather than finding out after the UI build.
 
 .EXAMPLE
     .\start-litellm.ps1
@@ -32,6 +33,7 @@ $ErrorActionPreference = 'Stop'
 
 $repo = $PSScriptRoot
 Set-Location $repo
+$log = Join-Path $repo 'litellm.log'
 
 function Import-DotEnv {
     param([string]$Path)
@@ -52,6 +54,46 @@ function Import-DotEnv {
     }
 }
 
+# both of these are checked before the Prisma and UI build steps, so a port that is already served
+# or a log a stranded launcher still holds fails in a second rather than after a two minute build
+function Assert-PortFree {
+    param([int]$Number)
+
+    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return }
+
+    $holder = Get-NetTCPConnection -LocalPort $Number -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $holder) { return }
+
+    $owner = Get-Process -Id $holder.OwningProcess -ErrorAction SilentlyContinue
+    $name = if ($owner) { $owner.ProcessName } else { 'an unknown process' }
+
+    Write-Host ''
+    Write-Host "Port $Number is already served by $name (pid $($holder.OwningProcess))" -ForegroundColor Red
+    Write-Host 'Stop that one first, or start this on another port:'
+    Write-Host "  Stop-Process -Id $($holder.OwningProcess) -Force"
+    Write-Host "  .\start-litellm.ps1 -Port $($Number + 1)"
+    exit 1
+}
+
+function Assert-LogWritable {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+
+    try {
+        [System.IO.File]::Open($Path, 'Open', 'Write', 'None').Dispose()
+    } catch {
+        Write-Host ''
+        Write-Host "Cannot write $Path" -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)"
+        Write-Host 'A launcher from an earlier run holds the log when its proxy is killed out from under it'
+        Write-Host 'Close that window, or stop that powershell, then run this again:'
+        Write-Host "  Get-CimInstance Win32_Process | Where-Object { `$_.CommandLine -like '*start-litellm*' }"
+        exit 1
+    }
+}
+
 Import-DotEnv (Join-Path $repo '.env')
 
 $missing = @(@('LITELLM_MASTER_KEY', 'DATABASE_URL') | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
@@ -66,6 +108,9 @@ if ($missing.Count -gt 0) {
     Write-Host 'The database has to be Postgres. Admin UI login refuses to start without it'
     exit 1
 }
+
+Assert-PortFree $Port
+Assert-LogWritable $log
 
 $env:PYTHONPATH = "$repo;$(Join-Path $repo 'litellm-proxy-extras')"
 $env:PYTHONIOENCODING = 'utf-8'
@@ -199,7 +244,6 @@ if (Test-Path -LiteralPath $builtIndex) {
 }
 
 $base = "http://127.0.0.1:$Port"
-$log = Join-Path $repo 'litellm.log'
 
 Write-Host ''
 Write-Host "Dashboard    $base/ui/" -ForegroundColor Cyan

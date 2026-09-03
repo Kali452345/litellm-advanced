@@ -7,8 +7,8 @@ import { DataTable } from "@/components/shared/DataTable";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { rankRows, type BreakdownRow } from "../_lib/analyticsSummary";
-import { formatCount, formatUsd } from "../_lib/format";
+import { rankRows, type BreakdownRow } from "@/app/(dashboard)/_lib/analyticsSummary";
+import { formatCount, formatUsd } from "@/app/(dashboard)/_lib/format";
 import { breakdownColumns } from "./BreakdownColumns";
 
 const TOP_N = 10;

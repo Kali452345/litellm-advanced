@@ -40,8 +40,7 @@ function PoolList({ pools, isLoading }: { pools: readonly PoolView[]; isLoading:
   return (
     <Card>
       <CardContent className="py-16 text-center text-sm text-muted-foreground">
-        No model has more than one key behind it yet. Add a second key to a model under Provider Keys and its pool shows
-        up here.
+        No model is set up yet. Add one under Provider Keys and every key behind it shows up here.
       </CardContent>
     </Card>
   );
@@ -77,7 +76,7 @@ export function QuotaView() {
         <SummaryCard
           label="Pools"
           value={String(overview.poolCount)}
-          hint="Model names with more than one key behind them"
+          hint="One per model name, however many keys sit behind it"
         />
         <SummaryCard
           label="Keys with room"

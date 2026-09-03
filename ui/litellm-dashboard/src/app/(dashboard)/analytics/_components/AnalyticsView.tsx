@@ -11,7 +11,7 @@ import { PageHeader } from "@/components/shared/PageHeader";
 import { UiLoadingSpinner } from "@/components/ui/ui-loading-spinner";
 import { all_admin_roles } from "@/utils/roles";
 
-import { apiKeyRows, breakdownRows, dailySeries, totalsFrom } from "../_lib/analyticsSummary";
+import { apiKeyRows, breakdownRows, dailySeries, totalsFrom } from "@/app/(dashboard)/_lib/analyticsSummary";
 import { AnalyticsBreakdown, type BreakdownBucket } from "./AnalyticsBreakdown";
 import { AnalyticsKpis } from "./AnalyticsKpis";
 import { AnalyticsTrend } from "./AnalyticsTrend";

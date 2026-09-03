@@ -101,6 +101,7 @@ describe("Sidebar (leftnav)", () => {
 
     expect(labels()).toEqual(
       expect.arrayContaining([
+        "Overview",
         "Virtual Keys",
         "Models & Keys",
         "Key Rotation",
@@ -118,7 +119,9 @@ describe("Sidebar (leftnav)", () => {
     asRole("internal");
     renderWithProviders(<Sidebar {...defaultProps} />);
 
-    expect(labels()).toEqual(expect.arrayContaining(["Virtual Keys", "Models & Keys", "Playground", "Analytics", "Logs"]));
+    expect(labels()).toEqual(
+      expect.arrayContaining(["Overview", "Virtual Keys", "Models & Keys", "Playground", "Analytics", "Logs"]),
+    );
     for (const hidden of ["Key Rotation", "Routing & Fallbacks", "Response Cache", "Appearance"]) {
       expect(screen.queryByRole("link", { name: hidden })).not.toBeInTheDocument();
     }
@@ -132,10 +135,11 @@ describe("Sidebar (leftnav)", () => {
     expect(navLink("Virtual Keys")).toBeInTheDocument();
   });
 
-  it("narrows an internal user's nav to an admin-saved page allowlist", () => {
+  it("narrows an internal user's nav to an admin-saved page allowlist, but never hides the landing page", () => {
     asRole("internal");
     renderWithProviders(<Sidebar {...defaultProps} enabledPagesInternalUsers={["api-keys", "logs"]} />);
 
+    expect(navLink("Overview")).toBeInTheDocument();
     expect(navLink("Virtual Keys")).toBeInTheDocument();
     expect(navLink("Logs")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Analytics" })).not.toBeInTheDocument();
@@ -185,7 +189,16 @@ describe("Sidebar (leftnav)", () => {
     expect(navLink("Analytics")).not.toHaveAttribute("data-active");
   });
 
+  it("falls back to the overview when the current page is not a nav item", () => {
+    asRole("admin");
+    renderWithProviders(<Sidebar {...defaultProps} defaultSelectedKey="onboarding" />);
+
+    expect(navLink("Overview")).toHaveAttribute("data-active", "true");
+    expect(navLink("Virtual Keys")).not.toHaveAttribute("data-active");
+  });
+
   it("derives a section and title breadcrumb from the nav config", () => {
+    expect(getBreadcrumb("overview")).toEqual({ section: "Gateway", title: "Overview" });
     expect(getBreadcrumb("analytics")).toEqual({ section: "Insights", title: "Analytics" });
     expect(getBreadcrumb("quota")).toEqual({ section: "Gateway", title: "Key Rotation" });
     expect(getBreadcrumb("router-settings")).toEqual({ section: "Settings", title: "Routing & Fallbacks" });

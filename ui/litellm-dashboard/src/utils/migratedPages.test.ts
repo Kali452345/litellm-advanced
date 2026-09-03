@@ -54,6 +54,7 @@ describe("migratedHref / legacyPageHref", () => {
       "llm-playground",
       "logs",
       "models",
+      "overview",
       "quota",
       "router-settings",
       "ui-theme",

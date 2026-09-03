@@ -31,6 +31,7 @@ export interface PoolView {
   keyCount: number;
   availableKeyCount: number;
   meteredKeyCount: number;
+  readySeconds: number | null;
   readyIn: string | null;
 }
 
@@ -125,6 +126,7 @@ export const toPoolView = (pool: PoolQuotaUsage): PoolView => {
     keyCount: keys.length,
     availableKeyCount: keys.filter((key) => !key.exhausted).length,
     meteredKeyCount: keys.filter((key) => key.metered).length,
+    readySeconds: pool.exhausted ? soonestRoom : null,
     readyIn: pool.exhausted && soonestRoom != null ? formatCountdown(soonestRoom) : null,
   };
 };

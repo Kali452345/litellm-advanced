@@ -2,8 +2,8 @@
 
 import SummaryCard from "@/components/shared/SummaryCard";
 
-import type { AnalyticsTotals } from "../_lib/analyticsSummary";
-import { formatAverage, formatCount, formatExact, formatPercent, formatUsd } from "../_lib/format";
+import type { AnalyticsTotals } from "@/app/(dashboard)/_lib/analyticsSummary";
+import { formatAverage, formatCount, formatExact, formatPercent, formatUsd } from "@/app/(dashboard)/_lib/format";
 
 interface AnalyticsKpisProps {
   totals: AnalyticsTotals;

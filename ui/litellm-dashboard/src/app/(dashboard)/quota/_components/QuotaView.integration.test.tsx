@@ -226,11 +226,11 @@ describe("QuotaView", () => {
     expect(GET).not.toHaveBeenCalled();
   });
 
-  it("points an operator with no pools at where a second key gets added", async () => {
+  it("points an operator with no pools at where a key gets added", async () => {
     GET.mockResolvedValue({ data: { enforced: true, pools: [] } });
     renderView();
 
-    expect(await screen.findByText(/No model has more than one key behind it yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/Add one under Provider Keys/)).toBeInTheDocument();
     expectSummary("pools", "0");
   });
 });

@@ -4,8 +4,8 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 import { DataTableSortHeader } from "@/components/shared/DataTable";
 
-import type { BreakdownRow } from "../_lib/analyticsSummary";
-import { formatAverage, formatCount, formatPercent, formatUsd } from "../_lib/format";
+import type { BreakdownRow } from "@/app/(dashboard)/_lib/analyticsSummary";
+import { formatAverage, formatCount, formatPercent, formatUsd } from "@/app/(dashboard)/_lib/format";
 
 const numeric = (
   id: keyof BreakdownRow,

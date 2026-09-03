@@ -9,6 +9,7 @@ import { serverRootPath } from "@/components/networking";
  * legacy `?page=` URL; remove it to roll back.
  */
 export const MIGRATED_PAGES: Record<string, string> = {
+  overview: "overview",
   "api-keys": "api-keys",
   models: "models-and-endpoints",
   "llm-playground": "playground",

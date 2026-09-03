@@ -22,6 +22,7 @@ import {
   Database,
   Gauge,
   KeyRound,
+  LayoutDashboard,
   Network,
   Palette,
   PanelLeftClose,
@@ -67,6 +68,7 @@ const menuGroups: MenuGroup[] = [
   {
     groupLabel: "GATEWAY",
     items: [
+      { key: "overview", page: "overview", label: "Overview", icon: <LayoutDashboard {...ICON} /> },
       { key: "api-keys", page: "api-keys", label: "Virtual Keys", icon: <KeyRound {...ICON} /> },
       {
         key: "models",
@@ -120,7 +122,7 @@ const findMenuItemKey = (page: string): string => {
     const item = group.items.find((candidate) => candidate.page === page || candidate.key === page);
     if (item) return item.key;
   }
-  return "api-keys";
+  return "overview";
 };
 
 const SECTION_DISPLAY: Record<string, string> = {
@@ -162,9 +164,11 @@ const Sidebar_: React.FC<SidebarProps> = ({
 
   /**
    * An admin-saved page allowlist still applies even though the panel that wrote it is gone.
-   * Honouring a stored value keeps a non-admin's nav no wider than the admin chose.
+   * Honouring a stored value keeps a non-admin's nav no wider than the admin chose, except for
+   * the overview, which is where every user lands and so cannot be hidden from them.
    */
   const isVisible = (item: MenuItem): boolean => {
+    if (item.key === "overview") return true;
     if (item.key === "llm-playground" && isViewOnly) return false;
     if (item.roles && !item.roles.includes(userRole)) return false;
     if (!isAdminRole(userRole) && enabledPagesInternalUsers != null) {

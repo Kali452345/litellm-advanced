@@ -181,7 +181,8 @@ being configured
 
 Docs are in-repo rather than a docs-site page, because this fork tracks no `docs/` directory at
 all. No dashboard consumer this phase either: the Provider Keys tab covers setup, and a live
-usage panel is its own piece of work rather than a footnote to this one
+usage panel is its own piece of work rather than a footnote to this one. It arrived with the
+dashboard trim, as the Key Rotation page
 
 Costs, accepted. `usage` returns a row per deployment, including the unmetered ones, so a caller
 can zip the rows back onto its own list; that means the endpoint groups by model name itself
@@ -223,4 +224,48 @@ One cost, and no new type diagnostics. `update_settings` takes `**kwargs` untype
 is validated through a `TypeAdapter` at the call site rather than passed straight in, which trades
 a copy of about ten keys per settings apply for the `reportUnknownArgumentType` that phases 3 and 4
 had to accept. Declaring a local instead makes it worse, since pyright reports the narrowed type
+
+## Phase 8, the switch itself: done
+
+`enable_quota_routing` and `quota_max_wait_seconds` reach a running proxy from the Key Rotation
+page through `POST /config/update`, so turning rotation on involves no config file and no restart
+
+Which is what phase 7 left unfinished. It made both settings survive a router built from the
+database, and the only writer was still a text editor. Phase 5's interface covers adding keys but
+not switching on the thing that makes their caps mean anything
+
+`UpdateRouterConfig` gained both fields, since that is what `/config/update` validates a
+`router_settings` body against and what its per-key merge writes into the row. The merge is
+`{**existing, **payload.dict(exclude_none=True)}`, and that exposed a defect worth its own
+regression test: `model_group_alias` defaulted to `{}` rather than `None` on that model, so every
+partial write of any router setting, from any panel, was quietly resetting whatever aliases were
+stored
+
+Both keys always go together on the wire. `QuotaRoutingSettings.enforcer` reads a missing flag as
+leave enforcement alone, so a budget sent on its own would land on a router with enforcement off
+and read back as a number nobody asked for
+
+The read side had to be honest about that. `quota_usage_of` builds a throwaway enforcer when the
+router has none, which is how the caps still come back while the flag is off, and that enforcer
+carries the default budget, so a budget saved while enforcement is off could never be shown as
+the one in force. `ModelQuotaUsageResponse` now reports `max_wait_seconds` off whichever enforcer
+answered, and the page disables the budget field while the draft has enforcement off. The form
+logic ignores that field's text entirely in that state, so a half-typed number can never trap an
+operator into being unable to switch enforcement off
+
+The logic is a module rather than a component. `quotaSettingsForm.ts` is a tagged union over
+loading, unchanged, invalid and ready, with the payload a save would send carried on the ready
+arm, covered by 19 unit tests that run in 18ms. The integration test keeps only the five cases
+that prove a field reaches the right payload key, which is the dashboard's own rule about logic
+reachable only through a render
+
+Deliberately not shipped: the rest of `router_settings`. This page is Key Rotation, and every
+other field would need the same read-back argument settled before a switch for it could be
+trusted. Also no optimistic update. The save awaits the refetch and the local draft is cleared
+after it, so the field never flicks back through the old value on its way to the new one
+
+No new type diagnostics on either side. `QuotaSettingsUpdate` derives both of its field types from
+the generated schema, as `NonNullable<RouterSettings["..."]>`, so a rename in the OpenAPI contract
+fails compilation. A hand-written interface would not catch it: the body is passed as a variable,
+and excess-property checking only applies to an object literal
 

@@ -45,17 +45,19 @@ once every Gemini key is spent for the minute the same name keeps working throug
 
 A pool built in the Admin UI instead has no `model_list` in the config at all, so the
 router is built from the models in the database and has its settings applied to it
-afterwards. Both settings survive that, from a config file or from a `router_settings`
-row, which is what a config this small is enough for
+afterwards. Both settings survive that, so the config file only has to say where the
+models live
 
 ```yaml
 general_settings:
   store_model_in_db: true
-
-router_settings:
-  enable_quota_routing: true
-  quota_max_wait_seconds: 75
 ```
+
+Neither setting has to be in a file at all. Key Rotation in the Admin UI has a Rotation
+settings card that writes both of them to the `router_settings` row and applies them to
+the router already serving traffic, so switching enforcement on or changing the hold
+budget costs no restart. The database row is overlaid on the config file's section, so
+what the page saved is what is in force even when a file sets the same key
 
 ## The deployment params
 
@@ -117,6 +119,7 @@ curl -s -X GET 'http://0.0.0.0:4000/model/quota/usage' -H "Authorization: Bearer
 ```json
 {
   "enforced": true,
+  "max_wait_seconds": 75,
   "pools": [
     {
       "model_name": "fast",
@@ -155,13 +158,18 @@ The first key is spent for this minute and the pool is not, because the second k
 room, which is the rotation working rather than a failure. A pool reports `exhausted` only
 when every key in it is spent, which is the state where a request actually fails, and
 `seconds_until_room` only then, since that is the only point where waiting is honest. A key
-with no cap reports no windows, and keeps its pool alive. `enforced: false` means the
-router was built without `enable_quota_routing`, so the caps below it are what is
-configured while nothing counts against them
+with no cap reports no windows, and keeps its pool alive. `enforced: false` means
+enforcement is off, so the caps below it are what is configured while nothing counts
+against them, and `max_wait_seconds` is then the budget enforcement would start with rather
+than one in force
 
 There is deliberately no requests-remaining total per pool. Two deployments can share one
 counter, through `quota_scope_id` or through the same key added twice, and a total would
 double count them. An exhaustion flag is dedupe-immune and is what routing itself acts on
+
+In the Admin UI the same read is the Key Rotation page: a card per pool, a meter per window
+on every key, and the Rotation settings card that turns enforcement on and sets the hold
+budget
 
 ## Adding the keys
 

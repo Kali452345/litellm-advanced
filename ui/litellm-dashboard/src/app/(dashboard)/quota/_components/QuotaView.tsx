@@ -3,7 +3,7 @@
 import { Gauge } from "lucide-react";
 import { useMemo } from "react";
 
-import { toOverview, toPoolViews } from "@/app/(dashboard)/hooks/quotaUsage/quotaSummary";
+import { toOverview, toPoolViews, type PoolView } from "@/app/(dashboard)/hooks/quotaUsage/quotaSummary";
 import { useQuotaUsage } from "@/app/(dashboard)/hooks/quotaUsage/useQuotaUsage";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { AdminOnlyNotice } from "@/components/shared/AdminOnlyNotice";
@@ -15,6 +15,37 @@ import { UiLoadingSpinner } from "@/components/ui/ui-loading-spinner";
 import { all_admin_roles } from "@/utils/roles";
 
 import { QuotaPoolCard } from "./QuotaPoolCard";
+
+function PoolList({ pools, isLoading }: { pools: readonly PoolView[]; isLoading: boolean }) {
+  if (pools.length > 0) {
+    return (
+      <>
+        {pools.map((pool) => (
+          <QuotaPoolCard key={pool.modelName} pool={pool} />
+        ))}
+      </>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex justify-center py-16">
+          <UiLoadingSpinner className="size-6" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardContent className="py-16 text-center text-sm text-muted-foreground">
+        No model has more than one key behind it yet. Add a second key to a model under Provider Keys and its pool shows
+        up here.
+      </CardContent>
+    </Card>
+  );
+}
 
 export function QuotaView() {
   const { userRole } = useAuthorized();
@@ -43,7 +74,11 @@ export function QuotaView() {
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <SummaryCard label="Pools" value={String(overview.poolCount)} hint="Model names with more than one key behind them" />
+        <SummaryCard
+          label="Pools"
+          value={String(overview.poolCount)}
+          hint="Model names with more than one key behind them"
+        />
         <SummaryCard
           label="Keys with room"
           value={`${overview.availableKeyCount} / ${overview.keyCount}`}
@@ -64,22 +99,7 @@ export function QuotaView() {
         />
       </div>
 
-      {isLoading && pools.length === 0 ? (
-        <Card>
-          <CardContent className="flex justify-center py-16">
-            <UiLoadingSpinner className="size-6" />
-          </CardContent>
-        </Card>
-      ) : pools.length === 0 ? (
-        <Card>
-          <CardContent className="py-16 text-center text-sm text-muted-foreground">
-            No model has more than one key behind it yet. Add a second key to a model under Provider Keys and its pool
-            shows up here.
-          </CardContent>
-        </Card>
-      ) : (
-        pools.map((pool) => <QuotaPoolCard key={pool.modelName} pool={pool} />)
-      )}
+      <PoolList pools={pools} isLoading={isLoading} />
     </div>
   );
 }

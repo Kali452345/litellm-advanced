@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { rankRows, type BreakdownRow } from "../_lib/analyticsSummary";
 import { formatCount, formatUsd } from "../_lib/format";
-import { breakdownColumns } from "./breakdownColumns";
+import { breakdownColumns } from "./BreakdownColumns";
 
 const TOP_N = 10;
 

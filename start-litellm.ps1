@@ -70,13 +70,32 @@ if ($missing.Count -gt 0) {
 $env:PYTHONPATH = "$repo;$(Join-Path $repo 'litellm-proxy-extras')"
 $env:PYTHONIOENCODING = 'utf-8'
 
+function Format-NativeLine {
+    param([object]$Record)
+
+    # uvicorn and npm log to stderr, so a line arrives as an ErrorRecord whose own ToString is the
+    # wrapper type name: reading the message keeps it the plain line the tool wrote
+    if ($Record -is [System.Management.Automation.ErrorRecord]) { return $Record.Exception.Message }
+    return [string]$Record
+}
+
 function Invoke-Native {
     param([string]$Command, [string[]]$Arguments, [switch]$Quiet)
 
-    # native stderr under 'Stop' becomes a terminating NativeCommandError
+    # native stderr under 'Stop' becomes a terminating NativeCommandError, and anything the command
+    # leaves in the pipeline joins this function's return value, which has to be the exit code alone
     $ErrorActionPreference = 'Continue'
-    if ($Quiet) { & $Command @Arguments 2>&1 | Out-Null } else { & $Command @Arguments }
+    & $Command @Arguments 2>&1 | ForEach-Object {
+        if (-not $Quiet) { Write-Host (Format-NativeLine $_) }
+    }
     return $LASTEXITCODE
+}
+
+function Get-NativeOutput {
+    param([string]$Command, [string[]]$Arguments)
+
+    $ErrorActionPreference = 'Continue'
+    return @(& $Command @Arguments 2>$null)
 }
 
 function Get-NewestWriteUtc {
@@ -121,9 +140,7 @@ function Build-Dashboard {
     }
 }
 
-$scriptDirs = @(
-    Invoke-Native $Python @('-c', "import sysconfig; print(sysconfig.get_path('scripts')); print(sysconfig.get_path('scripts', 'nt_user'))")
-)
+$scriptDirs = Get-NativeOutput $Python @('-c', "import sysconfig; print(sysconfig.get_path('scripts')); print(sysconfig.get_path('scripts', 'nt_user'))")
 foreach ($dir in $scriptDirs) {
     if ($dir -and (Test-Path -LiteralPath $dir) -and (($env:PATH -split ';') -notcontains $dir)) {
         $env:PATH = "$dir;$env:PATH"
@@ -236,13 +253,12 @@ $proxyArgs = @(
 )
 if ($DetailedDebug) { $proxyArgs += '--detailed_debug' }
 
-# uvicorn logs to stderr, so every log line arrives as an ErrorRecord whose own ToString is the
-# wrapper type name: reading the message keeps it a plain line, and the writer keeps the log utf-8
+# the writer keeps the log utf-8 whatever the console code page is
 $writer = [System.IO.StreamWriter]::new($log, $false, [System.Text.UTF8Encoding]::new($false))
 try {
     $ErrorActionPreference = 'Continue'
     & $Python @proxyArgs 2>&1 | ForEach-Object {
-        $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+        $line = Format-NativeLine $_
         Write-Host $line
         $writer.WriteLine($line)
         $writer.Flush()

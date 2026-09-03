@@ -9,15 +9,11 @@ import {
 } from "@/components/ui/breadcrumb";
 import { ToolbarSeparator } from "@/components/shared/ToolbarSeparator";
 import { getBreadcrumb } from "@/components/leftnav";
-import { BlogDropdown } from "@/components/Navbar/BlogDropdown/BlogDropdown";
 import { DocsLink } from "@/components/Navbar/DocsLink/DocsLink";
-import { CommunityEngagementButtons } from "@/components/Navbar/CommunityEngagementButtons/CommunityEngagementButtons";
-import { NotificationsBell } from "@/components/Navbar/NotificationsBell/NotificationsBell";
 import ViewSwitcher from "@/components/Navbar/ViewSwitcher";
 import ThemeToggle from "@/components/ThemeToggle/ThemeToggle";
 import WorkerDropdown from "@/components/Navbar/WorkerDropdown/WorkerDropdown";
 import { useWorker } from "@/hooks/useWorker";
-import { useDisableShowPrompts } from "@/app/(dashboard)/hooks/useDisableShowPrompts";
 import { clearTokenCookies } from "@/utils/cookieUtils";
 import { clearStoredReturnUrl, getLoginUrl } from "@/utils/returnUrlUtils";
 
@@ -31,7 +27,6 @@ export function DashboardHeader({ page }: DashboardHeaderProps) {
   const { title } = getBreadcrumb(page);
   const { isControlPlane, selectedWorker } = useWorker();
   const showWorkerSwitch = isControlPlane && selectedWorker !== null;
-  const hideCommunityLinks = useDisableShowPrompts();
 
   const handleWorkerSwitch = (workerId: string) => {
     clearTokenCookies();
@@ -63,11 +58,8 @@ export function DashboardHeader({ page }: DashboardHeaderProps) {
           </>
         )}
         <DocsLink />
-        <BlogDropdown />
-        {!hideCommunityLinks && <CommunityEngagementButtons />}
         <ToolbarSeparator />
         <ThemeToggle />
-        <NotificationsBell />
       </div>
     </header>
   );

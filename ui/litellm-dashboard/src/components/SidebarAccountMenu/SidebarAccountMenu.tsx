@@ -1,9 +1,6 @@
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { useHealthReadinessDetails } from "@/app/(dashboard)/hooks/healthReadiness/useHealthReadinessDetails";
-import { useDisableBlogPosts } from "@/app/(dashboard)/hooks/useDisableBlogPosts";
-import { useDisableBouncingIcon } from "@/app/(dashboard)/hooks/useDisableBouncingIcon";
 import { useDisableShowNewBadge } from "@/app/(dashboard)/hooks/useDisableShowNewBadge";
-import { useDisableShowPrompts } from "@/app/(dashboard)/hooks/useDisableShowPrompts";
 import { emitLocalStorageChange, removeLocalStorageItem, setLocalStorageItem } from "@/utils/localStorageUtils";
 import { navAccountDisplayName } from "@/components/Navbar/navDisplayName";
 import CopyButton from "@/components/shared/CopyButton";
@@ -18,6 +15,7 @@ import { ChevronsUpDown, Crown, IdCard, LogOut, Mail, ShieldCheck } from "lucide
 import React from "react";
 
 const RELEASE_NOTES_URL = "https://docs.litellm.ai/release_notes";
+const NEW_BADGE_FLAG = "disableShowNewBadge";
 
 function hueFromString(seed: string): number {
   let h = 0;
@@ -84,50 +82,16 @@ const SidebarAccountMenu: React.FC<SidebarAccountMenuProps> = ({ onLogout, colla
   const { userId, userEmail, userRoleLabel: userRole, premiumUser, accessToken } = useAuthorized();
   const { data: healthData } = useHealthReadinessDetails(accessToken);
   const version = healthData?.litellm_version;
-  const disableShowPrompts = useDisableShowPrompts();
-  const disableBlogPosts = useDisableBlogPosts();
-  const disableBouncingIcon = useDisableBouncingIcon();
   const disableShowNewBadge = useDisableShowNewBadge();
 
-  const setFlag = (key: string, checked: boolean) => {
-    if (checked) {
-      setLocalStorageItem(key, "true");
+  const setNewBadgeHidden = (hidden: boolean) => {
+    if (hidden) {
+      setLocalStorageItem(NEW_BADGE_FLAG, "true");
     } else {
-      removeLocalStorageItem(key);
+      removeLocalStorageItem(NEW_BADGE_FLAG);
     }
-    emitLocalStorageChange(key);
+    emitLocalStorageChange(NEW_BADGE_FLAG);
   };
-
-  const toggles = [
-    {
-      key: "disableShowNewBadge",
-      label: "Hide New Feature Indicators",
-      ariaLabel: "Toggle hide new feature indicators",
-      checked: disableShowNewBadge,
-      onCheckedChange: (checked: boolean) => setFlag("disableShowNewBadge", checked),
-    },
-    {
-      key: "disableShowPrompts",
-      label: "Hide All Prompts",
-      ariaLabel: "Toggle hide all prompts",
-      checked: disableShowPrompts,
-      onCheckedChange: (checked: boolean) => setFlag("disableShowPrompts", checked),
-    },
-    {
-      key: "disableBlogPosts",
-      label: "Hide Blog Posts",
-      ariaLabel: "Toggle hide blog posts",
-      checked: disableBlogPosts,
-      onCheckedChange: (checked: boolean) => setFlag("disableBlogPosts", checked),
-    },
-    {
-      key: "disableBouncingIcon",
-      label: "Hide Bouncing Icon",
-      ariaLabel: "Toggle hide bouncing icon",
-      checked: disableBouncingIcon,
-      onCheckedChange: (checked: boolean) => setFlag("disableBouncingIcon", checked),
-    },
-  ];
 
   const seed = userEmail || userId || "user";
   const initials = initialsFromIdentity(userEmail, userId);
@@ -168,18 +132,9 @@ const SidebarAccountMenu: React.FC<SidebarAccountMenuProps> = ({ onLogout, colla
         className="w-[268px] gap-0 overflow-hidden p-0"
         data-testid="sidebar-account-menu-panel"
       >
-        <div className="flex items-center gap-2 border-b border-border px-3 py-3">
-          <span className="text-[15px] font-bold tracking-tight text-foreground">LiteLLM</span>
-          {!disableBouncingIcon && (
-            <span
-              className="animate-bounce text-lg leading-none"
-              style={{ animationDuration: "2s" }}
-              title="Thanks for using LiteLLM!"
-              aria-hidden
-            >
-              🌴
-            </span>
-          )}
+        <div className="flex items-center gap-1.5 border-b border-border px-3 py-3">
+          <span className="text-[15px] font-semibold tracking-tight text-foreground">LiteLLM</span>
+          <span className="text-[15px] font-light tracking-tight text-muted-foreground">Advanced</span>
           <span className="flex-1" />
           {version && (
             <Badge
@@ -220,17 +175,15 @@ const SidebarAccountMenu: React.FC<SidebarAccountMenuProps> = ({ onLogout, colla
         <Separator />
 
         <div className="py-1">
-          {toggles.map((toggle) => (
-            <div key={toggle.key} className="flex h-[38px] items-center justify-between gap-3 px-3">
-              <span className="text-[13px] text-foreground">{toggle.label}</span>
-              <Switch
-                size="sm"
-                checked={toggle.checked}
-                onCheckedChange={toggle.onCheckedChange}
-                aria-label={toggle.ariaLabel}
-              />
-            </div>
-          ))}
+          <div className="flex h-[38px] items-center justify-between gap-3 px-3">
+            <span className="text-[13px] text-foreground">Hide New Feature Indicators</span>
+            <Switch
+              size="sm"
+              checked={disableShowNewBadge}
+              onCheckedChange={setNewBadgeHidden}
+              aria-label="Toggle hide new feature indicators"
+            />
+          </div>
         </div>
 
         <Separator />

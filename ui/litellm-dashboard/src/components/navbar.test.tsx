@@ -10,14 +10,6 @@ vi.mock("@/components/networking", () => ({
   serverRootPath: "",
 }));
 
-vi.mock("@/app/(dashboard)/hooks/useDisableBouncingIcon", () => ({
-  useDisableBouncingIcon: () => false,
-}));
-
-vi.mock("./Navbar/BlogDropdown/BlogDropdown", () => ({
-  BlogDropdown: () => <div data-testid="blog-dropdown">Blog</div>,
-}));
-
 const mockUserDropdownData = vi.hoisted(() => ({
   current: () => ({
     userId: "test-user",
@@ -77,23 +69,9 @@ vi.mock("@/utils/proxyUtils", () => ({
   }),
 }));
 
-// Mock CommunityEngagementButtons component
-vi.mock("./Navbar/CommunityEngagementButtons/CommunityEngagementButtons", () => ({
-  CommunityEngagementButtons: () => (
-    <div data-testid="community-engagement-buttons">
-      <a href="https://www.litellm.ai/support" target="_blank" rel="noopener noreferrer">
-        Join Slack
-      </a>
-      <a href="https://github.com/BerriAI/litellm" target="_blank" rel="noopener noreferrer">
-        Star us on GitHub
-      </a>
-    </div>
-  ),
-}));
-
 // Create mock functions that can be controlled in tests
 let mockUseThemeImpl = () => ({ logoUrl: null as string | null });
-let mockUseHealthReadinessDetailsImpl = () => ({ data: null as any });
+let mockUseHealthReadinessDetailsImpl: () => { data: { litellm_version: string } | null } = () => ({ data: null });
 let mockGetLocalStorageItemImpl = (key: string) => null as string | null;
 const mockUseAuthorizedImpl = () => ({
   userId: "test-user",
@@ -146,9 +124,17 @@ describe("Navbar", () => {
   it("should render without crashing", () => {
     renderWithProviders(<Navbar {...defaultProps} />);
 
-    expect(screen.getByRole("button", { name: /^notifications$/i })).toBeInTheDocument();
     expect(screen.getByText("Docs")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /open account menu/i })).toBeInTheDocument();
+  });
+
+  it("carries no notifications bell, blog feed or community links", () => {
+    renderWithProviders(<Navbar {...defaultProps} />);
+
+    expect(screen.queryByRole("button", { name: /^notifications$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /blog/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /join slack/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /star us on github/i })).not.toBeInTheDocument();
   });
 
   it("should link the logo to the UI home route rather than the proxy origin", () => {
@@ -264,12 +250,11 @@ describe("Navbar", () => {
     mockUseThemeImpl = () => ({ logoUrl: null });
   });
 
-  it("should hide user dropdown and notifications on public pages", () => {
+  it("should hide the user dropdown on public pages", () => {
     const publicPageProps = { ...defaultProps, isPublicPage: true };
     renderWithProviders(<Navbar {...publicPageProps} />);
 
     expect(screen.queryByRole("button", { name: /open account menu/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^notifications$/i })).not.toBeInTheDocument();
   });
 
   it("should handle hide new feature indicators toggle", async () => {

@@ -88,7 +88,7 @@ describe("ProviderKeysPanel", () => {
     expect(GET).toHaveBeenCalledWith("/provider/profiles");
   });
 
-  it("sends only the provider and the key when the prefilled form is submitted untouched", async () => {
+  it("sends the key with a null base url, which names the provider's own url", async () => {
     const user = setup();
     renderPanel();
 
@@ -96,7 +96,9 @@ describe("ProviderKeysPanel", () => {
     await user.click(screen.getByRole("button", { name: "Add Key" }));
 
     await waitFor(() =>
-      expect(POST).toHaveBeenCalledWith("/provider/keys", { body: { provider: "gemini", api_key: "new-key" } }),
+      expect(POST).toHaveBeenCalledWith("/provider/keys", {
+        body: { provider: "gemini", api_key: "new-key", api_base: null },
+      }),
     );
   });
 
@@ -111,7 +113,7 @@ describe("ProviderKeysPanel", () => {
 
     await waitFor(() =>
       expect(POST).toHaveBeenCalledWith("/provider/keys", {
-        body: { provider: "gemini", api_key: "k3", rpm: 8, rpd: 250 },
+        body: { provider: "gemini", api_key: "k3", api_base: null, rpm: 8, rpd: 250 },
       }),
     );
   });
@@ -145,7 +147,22 @@ describe("ProviderKeysPanel", () => {
 
     await waitFor(() =>
       expect(POST).toHaveBeenCalledWith("/provider/keys", {
-        body: { provider: "gemini", api_key: "k3", models: ["pro"] },
+        body: { provider: "gemini", api_key: "k3", api_base: null, models: ["pro"] },
+      }),
+    );
+  });
+
+  it("sends the provider's own url once the prefilled base url is cleared", async () => {
+    const user = setup();
+    renderPanel();
+
+    fireEvent.change(await openForm(user, "groq"), { target: { value: "k2" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "" } });
+    await user.click(screen.getByRole("button", { name: "Add Key" }));
+
+    await waitFor(() =>
+      expect(POST).toHaveBeenCalledWith("/provider/keys", {
+        body: { provider: "groq", api_key: "k2", api_base: null },
       }),
     );
   });
@@ -256,5 +273,106 @@ describe("ProviderKeysPanel", () => {
     renderPanel();
 
     expect(await screen.findByTestId("add-provider-key-gemini")).toBeDisabled();
+  });
+
+  describe("testing a cap the provider never published", () => {
+    const probed = (overrides: Record<string, unknown> = {}) => ({
+      data: {
+        outcome: "rate_limited",
+        accepted: 7,
+        requests_sent: 8,
+        seconds_elapsed: 2,
+        rate_limit_type: "requests",
+        ...overrides,
+      },
+    });
+
+    const startTest = async (user: ReturnType<typeof setup>, key: string) => {
+      fireEvent.change(await openForm(user, "gemini"), { target: { value: key } });
+      await user.click(screen.getByRole("button", { name: "Test the limit" }));
+    };
+
+    it("walks the pasted key at the provider's own model string until it is refused", async () => {
+      POST.mockResolvedValue(probed());
+      const user = setup();
+      renderPanel();
+
+      await startTest(user, "k3");
+
+      await waitFor(() =>
+        expect(POST).toHaveBeenCalledWith("/provider/rate_limit/probe", {
+          body: {
+            model: "gemini/gemini-2.5-flash",
+            api_key: "k3",
+            api_base: null,
+            api_version: null,
+            max_requests: 60,
+          },
+        }),
+      );
+    });
+
+    it("shows the count the provider accepted and puts it in the per-minute field on request", async () => {
+      POST.mockResolvedValue(probed());
+      const user = setup();
+      renderPanel();
+
+      await startTest(user, "k3");
+
+      await user.click(await screen.findByRole("button", { name: "Use 7 as Requests Per Minute" }));
+
+      expect(screen.getByLabelText("Requests Per Minute")).toHaveValue(7);
+      expect(screen.getByText("Accepted 7 requests, then refused")).toBeInTheDocument();
+    });
+
+    it("adds the key under the measured cap without retyping it", async () => {
+      POST.mockResolvedValue(probed());
+      const user = setup();
+      renderPanel();
+
+      await startTest(user, "k3");
+      await user.click(await screen.findByRole("button", { name: "Use 7 as Requests Per Minute" }));
+      POST.mockResolvedValue({ data: { provider: "gemini", models: [created("flash", "gemini/gemini-2.5-flash")] } });
+      await user.click(screen.getByRole("button", { name: "Add Key" }));
+
+      await waitFor(() =>
+        expect(POST).toHaveBeenLastCalledWith("/provider/keys", {
+          body: { provider: "gemini", api_key: "k3", api_base: null, rpm: 7 },
+        }),
+      );
+    });
+
+    it("spends nothing until there is a key to measure", async () => {
+      const user = setup();
+      renderPanel();
+
+      await openForm(user, "gemini");
+      await user.click(screen.getByRole("button", { name: "Test the limit" }));
+
+      expect(await screen.findByText("Paste the key first")).toBeInTheDocument();
+      expect(POST).not.toHaveBeenCalled();
+    });
+
+    it("offers no number to type in when the key had nothing left to measure", async () => {
+      POST.mockResolvedValue(probed({ outcome: "already_limited", accepted: 0, requests_sent: 4 }));
+      const user = setup();
+      renderPanel();
+
+      await startTest(user, "k3");
+
+      expect(await screen.findByText("This key had nothing left to measure")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Use / })).not.toBeInTheDocument();
+    });
+
+    it("surfaces a rejected test rather than leaving the button looking busy", async () => {
+      POST.mockRejectedValue(new Error("provider not configured"));
+      const user = setup();
+      renderPanel();
+
+      await startTest(user, "k3");
+
+      await waitFor(() => expect(toast.fromError).toHaveBeenCalled());
+      expect(await screen.findByRole("button", { name: "Test the limit" })).toBeEnabled();
+    });
   });
 });

@@ -10,6 +10,8 @@ export type ProviderProfileModel = components["schemas"]["ProviderProfileModel"]
 export type AddProviderKeyRequest = components["schemas"]["AddProviderKeyRequest"];
 export type AddProviderKeyResponse = components["schemas"]["AddProviderKeyResponse"];
 export type AddedModel = components["schemas"]["AddedModel"];
+export type ProbeRateLimitRequest = components["schemas"]["ProbeRateLimitRequest"];
+export type RateLimitProbeResponse = components["schemas"]["RateLimitProbeResponse"];
 
 export const providerProfileKeys = createQueryKeys("providerProfiles");
 
@@ -48,3 +50,15 @@ export const useAddProviderKey = () => {
     },
   });
 };
+
+const probeRateLimit = async (body: ProbeRateLimitRequest): Promise<RateLimitProbeResponse | undefined> => {
+  const { data } = await fetchClient.POST("/provider/rate_limit/probe", { body });
+  return data;
+};
+
+/**
+ * A reading taken by spending the key's own allowance, not state the proxy holds, so nothing is
+ * cached and nothing is invalidated. It answers only once the provider refuses, which is up to the
+ * minute a per-minute cap is counted over.
+ */
+export const useProbeRateLimit = () => useMutation({ mutationFn: probeRateLimit });

@@ -41,25 +41,36 @@ describe("providerKeyFormValues", () => {
 
     expect([values.api_key, values.rpm, values.rpd]).toEqual(["", "", ""]);
   });
+
+  it("picks only the model the row was opened from", () => {
+    expect(providerKeyFormValues(profile(), "pro").models).toEqual(["pro"]);
+  });
+
+  it("falls back to the whole pool when the model is not one this provider serves", () => {
+    expect(providerKeyFormValues(profile(), "ultra").models).toEqual(["flash", "pro"]);
+  });
 });
 
 describe("buildAddProviderKeyBody", () => {
-  it("sends only the provider and the trimmed key when nothing is overridden", () => {
+  it("sends the trimmed key with a null base url, which names the provider's own url", () => {
     expect(buildAddProviderKeyBody(profile(), { api_key: "  k3  ", models: ["flash", "pro"] })).toEqual({
       provider: "gemini",
       api_key: "k3",
+      api_base: null,
     });
   });
 
   it("sends caps as numbers, not the strings the inputs hold", () => {
-    const body = buildAddProviderKeyBody(profile(), { api_key: "k3", rpm: "8", rpd: "250", models: ["flash", "pro"] });
+    const values = { api_key: "k3", rpm: "8", rpd: "250", models: ["flash", "pro"] };
+    const body = buildAddProviderKeyBody(profile(), values);
 
     expect(body.rpm).toBe(8);
     expect(body.rpd).toBe(250);
   });
 
   it("leaves a blank cap out, so the provider's own cap is copied instead of overridden", () => {
-    const body = buildAddProviderKeyBody(profile(), { api_key: "k3", rpm: "", rpd: "", models: ["flash", "pro"] });
+    const values = { api_key: "k3", rpm: "", rpd: "", models: ["flash", "pro"] };
+    const body = buildAddProviderKeyBody(profile(), values);
 
     expect("rpm" in body).toBe(false);
     expect("rpd" in body).toBe(false);
@@ -83,10 +94,14 @@ describe("buildAddProviderKeyBody", () => {
     expect(body.api_base).toBe("https://two.example.com");
   });
 
-  it("leaves a whitespace-only base url out rather than sending an empty string", () => {
-    const body = buildAddProviderKeyBody(profile(), { api_key: "k3", api_base: "   ", models: ["flash", "pro"] });
+  it("reads a cleared base url as the provider's own url, not as one to inherit", () => {
+    const body = buildAddProviderKeyBody(profile({ api_base: "https://gateway.example.com" }), {
+      api_key: "k3",
+      api_base: "   ",
+      models: ["flash", "pro"],
+    });
 
-    expect("api_base" in body).toBe(false);
+    expect(body.api_base).toBeNull();
   });
 });
 

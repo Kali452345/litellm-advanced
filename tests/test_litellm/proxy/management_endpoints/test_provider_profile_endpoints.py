@@ -252,6 +252,19 @@ def test_a_provider_at_several_base_urls_asks_which_one_the_new_key_uses():
     )
 
 
+def test_a_null_base_url_puts_the_key_on_the_providers_own_url_rather_than_asking():
+    """A provider reached at both a custom url and its own has no other way to name the second."""
+    pool = [
+        _entry("chat", "openai/gpt-5", "k1", api_base="https://gateway.example.com"),
+        _entry("chat", "openai/gpt-5", "k2"),
+    ]
+
+    plan = _plan(pool, provider="openai", api_key="k3", api_base=None)
+
+    assert plan.api_base is None
+    assert _planned(plan, "chat").litellm_params.api_base is None
+
+
 def test_models_the_provider_does_not_serve_are_rejected_with_the_ones_it_does():
     rejected = plan_provider_key(AddProviderKeyRequest(provider="gemini", api_key="k3", models=("pro", "ultra")), _POOL)
 

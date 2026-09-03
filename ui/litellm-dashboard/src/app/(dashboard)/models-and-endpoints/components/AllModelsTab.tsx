@@ -1,6 +1,7 @@
 "use client";
 
 import { useModelCostMap } from "@/app/(dashboard)/hooks/models/useModelCostMap";
+import { useProviderProfiles } from "@/app/(dashboard)/hooks/providerProfiles/useProviderProfiles";
 import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import DeleteResourceModal from "@/components/common_components/DeleteResourceModal";
@@ -8,6 +9,7 @@ import ModelSettingsModal from "@/components/model_dashboard/ModelSettingsModal/
 import { ModelData } from "@/components/model_dashboard/types";
 import { toast } from "@/lib/toast";
 import { migratedHref } from "@/utils/migratedPages";
+import { isProxyAdminRole } from "@/utils/roles";
 import { modelDeleteCall, modelPatchUpdateCall } from "@/components/networking";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDebouncedCallback } from "@tanstack/react-pacer/debouncer";
@@ -17,6 +19,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useModelsInfo } from "../../hooks/models/useModels";
 import { transformModelData } from "../utils/modelDataTransformer";
+import AddProviderKeyDialog from "./AddProviderKeyDialog";
 import {
   ALL_MODEL_GROUPS_VALUE,
   AllModelsTable,
@@ -25,6 +28,7 @@ import {
   WILDCARD_MODEL_GROUP_VALUE,
 } from "./AllModelsTable";
 import { ACCESS_GROUPS_COLUMN_ID, MODEL_NAME_COLUMN_ID, toServerSortField } from "./ModelsTableColumns";
+import { AddKeyTarget, resolveAddKeyAction } from "./providerKeyTarget";
 
 const SEARCH_DEBOUNCE_WAIT_MS = 200;
 const DEFAULT_PAGE_SIZE = 50;
@@ -50,6 +54,7 @@ const AllModelsTab = ({
   const { data: modelCostMapData, isLoading: isLoadingModelCostMap } = useModelCostMap();
   const { accessToken, userId, userRole } = useAuthorized();
   const { data: teams, isLoading: isLoadingTeams } = useTeams();
+  const { data: providerProfiles, isLoading: isLoadingProviderProfiles } = useProviderProfiles();
   const queryClient = useQueryClient();
 
   const [modelNameSearch, setModelNameSearch] = useState<string>("");
@@ -63,6 +68,7 @@ const AllModelsTab = ({
   const [deleteModalModelId, setDeleteModalModelId] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [pausingModelId, setPausingModelId] = useState<string | null>(null);
+  const [addKeyTarget, setAddKeyTarget] = useState<AddKeyTarget | null>(null);
 
   const resetToFirstPage = useCallback(() => {
     setPagination((previous) => (previous.pageIndex === 0 ? previous : { ...previous, pageIndex: 0 }));
@@ -264,6 +270,19 @@ const AllModelsTab = ({
     setIsModelSettingsModalVisible(true);
   }, []);
 
+  const resolveRowAddKeyAction = useCallback(
+    (model: ModelData) =>
+      resolveAddKeyAction(
+        {
+          canWrite: isProxyAdminRole(userRole ?? ""),
+          isLoading: isLoadingProviderProfiles,
+          profiles: providerProfiles,
+        },
+        model,
+      ),
+    [userRole, isLoadingProviderProfiles, providerProfiles],
+  );
+
   const teamAccessLabel = selectedTeam?.team_alias || selectedTeam?.team_id || "";
 
   return (
@@ -300,6 +319,8 @@ const AllModelsTab = ({
           onDeleteClick={handleDeleteClick}
           onTogglePauseClick={handleTogglePause}
           pausingModelId={pausingModelId}
+          resolveAddKeyAction={resolveRowAddKeyAction}
+          onAddKey={setAddKeyTarget}
         />
 
         {modelViewMode === "current_team" && (
@@ -363,6 +384,7 @@ const AllModelsTab = ({
         onCancel={() => setIsModelSettingsModalVisible(false)}
         onSuccess={() => setIsModelSettingsModalVisible(false)}
       />
+      <AddProviderKeyDialog target={addKeyTarget} onClose={() => setAddKeyTarget(null)} />
     </div>
   );
 };

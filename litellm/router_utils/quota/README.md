@@ -180,9 +180,58 @@ base url, the api version, the models and the caps are copied from the deploymen
 already exist, so the second key is a paste rather than a retype. `quota_scope_id` is never
 copied, because copying it would count the new key against the old key's allowance
 
-In the Admin UI the same thing is the Provider Keys tab under Models + Endpoints. Requests
-Per Minute and Requests Per Day are first-class fields on Add Model, and the first
-deployment of a provider is what later keys inherit their caps from
+In the Admin UI the same thing is the Provider Keys tab under Models + Endpoints. The models
+table also has an Add another key button on every row, which opens the same form already
+pointed at that deployment's provider with only the clicked model picked, so a second key for
+one model does not mean walking Add Model again. The base url comes in prefilled: keep it to
+reach the new key where the others are, change it for a different url, or clear it to use the
+provider's own default. Requests Per Minute and Requests Per Day are first-class fields on Add
+Model, and the first deployment of a provider is what later keys inherit their caps from
+
+## Finding a cap the provider will not publish
+
+Plenty of free tiers never state a figure, so `POST /provider/rate_limit/probe` measures one:
+it sends requests to a single key until the provider refuses one, and reports how many it
+accepted before that. The accepted count is the key's per-minute cap, so it is the number
+that goes into `rpm` for it
+
+```bash
+curl -s -X POST 'http://0.0.0.0:4000/provider/rate_limit/probe' \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
+  -d '{"model": "gemini/gemini-3.7-flash", "api_key": "'"$GEMINI_KEY_THREE"'"}'
+```
+
+```json
+{
+  "outcome": "rate_limited",
+  "accepted": 10,
+  "requests_sent": 12,
+  "seconds_elapsed": 4.2,
+  "rate_limit_type": "requests",
+  "retry_after_seconds": 24,
+  "message": "litellm.RateLimitError: 429 RESOURCE_EXHAUSTED"
+}
+```
+
+Only real requests can learn this, so the probe spends the key's allowance and whatever those
+requests cost, which is why it is proxy-admin only. It calls the provider directly rather than
+through the router, since the router would reserve quota for every request and would fail the
+measurement over onto a different key. The whole walk has to fit inside one minute, because a
+minute rolling over refills the allowance and no refusal would ever arrive
+
+`outcome` is what keeps a number that was never proven from being read as a cap.
+`rate_limited` is the only one where `accepted` is the cap. `already_limited` means the key had
+nothing left when the walk started, so nothing was measured and the zero is not a cap of zero.
+`ceiling_reached` and `deadline_reached` both report a floor: the count is all that was proven,
+and the true cap is at least that. `refused` is any other provider failure, with the probed key
+redacted out of `message`. A `rate_limit_type` of `tokens` or `concurrent_requests` says the
+provider named a ceiling that does not count requests per minute, and a `retry_after_seconds`
+longer than a minute says the count is the per-day cap rather than the per-minute one
+
+In the Admin UI this is the Test the limit button in the Add another key form, under the two cap
+fields. It walks the key that was pasted in at the first model picked, says what it accepted and
+what the test spent, and offers the number for Requests Per Minute or Requests Per Day when it
+measured one, so the figure is read off a real refusal instead of guessed
 
 ## Known gaps
 

@@ -16,6 +16,8 @@ import type {
   ProviderProfile,
 } from "@/app/(dashboard)/hooks/providerProfiles/useProviderProfiles";
 import { buildAddProviderKeyBody, capsLabel, providerKeyFormValues } from "./providerKeyPayload";
+import RateLimitTester from "./RateLimitTester";
+import { planRateLimitProbe } from "./rateLimitProbe";
 
 const wholeRequests = z
   .string()
@@ -32,18 +34,26 @@ const providerKeySchema = z.object({
 
 interface AddProviderKeyModalProps {
   profile: ProviderProfile | null;
+  focusModel?: string | null;
   isSaving: boolean;
   onCancel: () => void;
   onSubmit: (body: AddProviderKeyRequest) => void;
 }
 
-const AddProviderKeyModal: React.FC<AddProviderKeyModalProps> = ({ profile, isSaving, onCancel, onSubmit }) => {
-  const form = useZodForm(providerKeySchema, { values: providerKeyFormValues(profile) });
+const AddProviderKeyModal: React.FC<AddProviderKeyModalProps> = ({
+  profile,
+  focusModel,
+  isSaving,
+  onCancel,
+  onSubmit,
+}) => {
+  const form = useZodForm(providerKeySchema, { values: providerKeyFormValues(profile, focusModel) });
   const modelOptions = (profile?.models ?? []).map((model) => ({
     value: model.model_name,
     label: model.model_name,
     description: `${model.litellm_model} - ${capsLabel(model.rpm, model.rpd)}`,
   }));
+  const startedFromOneModel = Boolean(focusModel) && modelOptions.some((option) => option.value === focusModel);
   const submit = form.handleSubmit((values) => {
     if (!profile) return;
     onSubmit(buildAddProviderKeyBody(profile, values));
@@ -53,12 +63,17 @@ const AddProviderKeyModal: React.FC<AddProviderKeyModalProps> = ({ profile, isSa
     <Dialog open={profile !== null} onOpenChange={(open) => !open && onCancel()}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[560px]">
         <DialogHeader>
-          <DialogTitle>Add another key to {profile?.provider}</DialogTitle>
+          <DialogTitle>
+            {startedFromOneModel ? `Add another key behind ${focusModel}` : `Add another key to ${profile?.provider}`}
+          </DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
-          The key joins the {profile?.key_count} already behind {profile?.provider}, serving the same models under the
-          same caps, so requests rotate onto it and fail over to it. Everything except the key itself is filled in from
-          what this provider is already set up with.
+          The key joins the {profile?.key_count} already behind {profile?.provider}, so requests rotate onto it and fail
+          over to it.{" "}
+          {startedFromOneModel
+            ? `Only ${focusModel} is picked, so add the provider's other models if this key serves them too.`
+            : "It serves the same models under the same caps."}{" "}
+          Everything except the key itself is filled in from what this provider is already set up with.
         </p>
         <form onSubmit={submit} noValidate>
           <FieldGroup className="mt-4">
@@ -77,7 +92,11 @@ const AddProviderKeyModal: React.FC<AddProviderKeyModalProps> = ({ profile, isSa
               control={form.control}
               name="models"
               label="Models this key serves"
-              description="Every model the provider serves is picked. Drop the ones this key's tier does not include."
+              description={
+                startedFromOneModel
+                  ? "Only the model you came from is picked. Add the provider's others if this key serves them too."
+                  : "Every model the provider serves is picked. Drop the ones this key's tier does not include."
+              }
             >
               {({ id, value, onChange }) => (
                 <MultiSelect
@@ -126,11 +145,16 @@ const AddProviderKeyModal: React.FC<AddProviderKeyModalProps> = ({ profile, isSa
               )}
             </FormField>
 
+            <RateLimitTester
+              planProbe={() => planRateLimitProbe(profile, form.getValues())}
+              onUseCap={(fill) => form.setValue(fill.field, String(fill.requests), { shouldValidate: true })}
+            />
+
             <FormField
               control={form.control}
               name="api_base"
               label="Base URL"
-              description="Only change this when the new key is reached at a different url."
+              description="Keep it to reach this key where the others are, change it for a different url, or clear it for the provider's own default."
             >
               {({ ref, value, ...field }) => (
                 <Input {...field} ref={ref} value={value ?? ""} placeholder="The provider's default" />

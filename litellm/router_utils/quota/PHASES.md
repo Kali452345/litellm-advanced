@@ -140,6 +140,21 @@ every model on. The response is reported per model, so a partial success names t
 refused instead of reading as a clean success, and a total failure leaves the form open with the key
 still in it
 
+The same form is reachable from a deployment, not only from the provider row. Every row on the models
+table carries an Add another key button that resolves the profile behind that deployment and
+preselects only the model that was clicked, so a second key for one model is a paste rather than a
+second walk through Add Model. Matching is on `litellm_params.model` plus the base url, never on the
+provider name the table shows, because that name falls back to `openai` whenever the cost map does not
+know the model and would attach the key to the wrong pool. A deployment no profile covers, a caller
+who is not a proxy admin, and a profile list still loading each disable the button and say which one
+it is, so the row never opens a form the proxy would reject
+
+`api_base` on `POST /provider/keys` is a tri-state: omitted inherits the provider's, an explicit null
+means the provider's own default url, and a string is that url. Without the null case a provider
+reached at both a custom url and its own default could not receive a key at the default at all, since
+resolution refuses to guess between two base urls and 400s. Clearing the prefilled base url in the
+form is what sends null, so keeping it, changing it and clearing it are three different requests
+
 Add Model grows first-class Requests Per Minute and Requests Per Day inputs, next to the LiteLLM
 Params textarea that was previously the only way to set them. The first deployment of a provider is
 what a profile is derived from, so caps typed there are what every later key inherits. They post as
@@ -268,4 +283,55 @@ No new type diagnostics on either side. `QuotaSettingsUpdate` derives both of it
 the generated schema, as `NonNullable<RouterSettings["..."]>`, so a rename in the OpenAPI contract
 fails compilation. A hand-written interface would not catch it: the body is passed as a variable,
 and excess-property checking only applies to an object literal
+
+## Phase 9, measuring a cap the provider will not publish: done
+
+`POST /provider/rate_limit/probe` in
+`litellm/proxy/management_endpoints/provider_rate_limit_endpoints.py`, proxy-admin only, and a Test
+the limit card under the two cap fields in the Add another key form. It sends requests to one key
+until the provider refuses one, and reports how many it accepted before that
+
+Which is what phases 5 and 8 both assumed away. A profile copies the caps the keys already there
+were given, Add Model takes a figure typed in, and the Key Rotation page enforces whatever those two
+produced, so every path to an `rpm` traces back to a number the provider published. Plenty of free
+tiers never publish one, and a guess is either throughput left on the table or the 429 storm the
+pool was built to avoid
+
+It calls `acompletion` directly with the key rather than going through the router. The router would
+reserve quota for each of these requests and would fail the measurement over onto a different key at
+exactly the point the refusal was about to arrive, so the reading would be of the pool rather than of
+the key. The walk also has to fit inside one minute, since a minute rolling over refills the
+allowance and no refusal would ever come: waves of 4 against a 50 second deadline, one character of
+prompt and `max_tokens=1`, so a reading costs about as little as real requests can
+
+Five outcomes, and only one of them licenses a number. `rate_limited` is the cap. `already_limited`
+is a key that refused the very first wave, so nothing was measured, and it is the one worth being
+careful about: its accepted count is 0, and a 0 read as a cap would write `rpm: 0` and take the key
+out of the pool for good. `ceiling_reached` and `deadline_reached` are floors, `refused` is any other
+provider failure with the probed key redacted out of the message, and none of those four offers a
+number to type in. Two more fields decide which field a number belongs in when there is one:
+`tokens` or `concurrent_requests` says the ceiling that was hit is not counting requests per minute,
+and a retry-after longer than a minute says the count is the per-day cap rather than the per-minute
+one
+
+The walk is a pure recursion over an injected attempt and an injected clock, so its 16 tests measure
+a fake provider at a fake time instead of sleeping or reaching a network. The dashboard half splits
+the same way: `planRateLimitProbe` refuses to spend anything without a key and a model the provider
+actually serves, `readRateLimitProbe` turns an outcome into a headline, a detail and a nullable fill,
+and the two carry 22 unit tests that run in 11ms. `RateLimitTester.tsx` holds only the note, and
+reads the form through an injected thunk at click time rather than watching it, so typing the key
+does not re-render the modal on every keystroke
+
+Deliberately not shipped: writing the measured number straight onto the deployment. The button fills
+the form field and the operator still presses Add Key, because three of the five outcomes report a
+floor and one reports nothing, so a probe that quietly set a cap would be setting a wrong one most of
+the time it ran. Also no sweep across a provider's models or across a pool's keys. A per-minute cap
+is counted per key at one model, and a sweep would multiply real spend by the size of the pool to
+learn the same figure
+
+Costs, accepted. The probe spends the key's allowance and real money, which is why it is admin-only
+and why the card says so above the button. One `# mutable-ok` for the messages list litellm types as
+`list`, one `reportUnknownVariableType` ignore on the `acompletion` import for that same bare list,
+and one broad `except Exception` with a `noqa`, since every way a provider can fail is a reading here
+rather than a crash
 

@@ -13,21 +13,29 @@ export interface ProviderKeyFormValues {
   models?: string[];
 }
 
-export const providerKeyFormValues = (profile: ProviderProfile | null): Required<ProviderKeyFormValues> => ({
-  api_key: "",
-  api_base: profile?.api_base ?? "",
-  rpm: "",
-  rpd: "",
-  models: (profile?.models ?? []).map((model) => model.model_name),
-});
+export const providerKeyFormValues = (
+  profile: ProviderProfile | null,
+  focusModel?: string | null,
+): Required<ProviderKeyFormValues> => {
+  const served = (profile?.models ?? []).map((model) => model.model_name);
+
+  return {
+    api_key: "",
+    api_base: profile?.api_base ?? "",
+    rpm: "",
+    rpd: "",
+    models: focusModel && served.includes(focusModel) ? [focusModel] : served,
+  };
+};
 
 const servesEveryModel = (selected: readonly string[], profile: ProviderProfile): boolean =>
   profile.models.every((model) => selected.includes(model.model_name));
 
 /**
- * The base url is sent whenever the profile has one, since a provider reached at several base
- * urls needs it to know which pool the key joins. `models` is left out when every model is
- * picked, so the new key still serves a model added to the provider after this page loaded.
+ * The base url is always sent, since the api reads an absent one as "copy the provider's" and a
+ * null one as "the provider's own default", which is the only way to name that url for a provider
+ * reached at both. `models` is left out when every model is picked, so the new key still serves a
+ * model added to the provider after this page loaded.
  */
 export const buildAddProviderKeyBody = (
   profile: ProviderProfile,
@@ -39,7 +47,7 @@ export const buildAddProviderKeyBody = (
   return {
     provider: profile.provider,
     api_key: values.api_key.trim(),
-    ...(apiBase ? { api_base: apiBase } : {}),
+    api_base: apiBase === "" ? null : apiBase,
     ...(values.rpm ? { rpm: Number(values.rpm) } : {}),
     ...(values.rpd ? { rpd: Number(values.rpd) } : {}),
     ...(servesEveryModel(selected, profile) ? {} : { models: [...selected] }),

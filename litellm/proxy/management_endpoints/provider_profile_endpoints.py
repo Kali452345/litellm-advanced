@@ -78,7 +78,11 @@ class AddProviderKeyRequest(BaseModel):
 
     provider: str = Field(min_length=1, description="The provider to add the key to, as reported by /provider/profiles")
     api_key: str = Field(min_length=1, repr=False, description="The new key")
-    api_base: str | None = Field(default=None, description="The new key's base url, defaulting to the provider's")
+    api_base: str | None = Field(
+        default=None,
+        description="The new key's base url. Omit it to inherit the provider's, or send null for the provider's own "
+        "default, which is what a provider reached at both its own url and a custom one needs",
+    )
     models: tuple[str, ...] | None = Field(
         default=None,
         min_length=1,
@@ -337,6 +341,11 @@ def plan_provider_key(
     """
     The deployments that put `request.api_key` behind everything its provider serves.
 
+    `api_base` is a tri-state. Omitted inherits the base url the provider's existing
+    deployments use, and is refused when they use more than one. Sent as null means the
+    provider's own default url, which is the only way to reach the default-url pool of a
+    provider that is also reached at a custom url.
+
     `quota_scope_id` is deliberately not copied from them. That param is an operator
     saying several deployments share one account, so copying it onto a new key would
     count two keys against one counter and spend half of what the pool really has.
@@ -349,7 +358,8 @@ def plan_provider_key(
             provider=provider, configured=tuple(dict.fromkeys(deployment.provider for deployment in parsed))
         )
     bases: Final = tuple(dict.fromkeys(member.params.api_base for member in members))
-    if request.api_base is None and len(bases) > 1:
+    chose_base: Final = "api_base" in request.model_fields_set
+    if not chose_base and len(bases) > 1:
         return SeveralApiBases(provider=provider, api_bases=tuple(base for base in bases if base is not None))
     entries: Final = _profile_models(members)
     served: Final = frozenset(entry.model_name for entry in entries)
@@ -358,7 +368,7 @@ def plan_provider_key(
         return UnknownModels(
             provider=provider, unknown=unknown, configured=tuple(entry.model_name for entry in entries)
         )
-    api_base: Final = request.api_base if request.api_base is not None else next(iter(bases), None)
+    api_base: Final = request.api_base if chose_base else next(iter(bases), None)
     if _credential_scope_id(api_base=api_base, api_key=request.api_key) in frozenset(
         member.credential_scope_id for member in members
     ):
@@ -492,8 +502,8 @@ def _public_failure(rejected: PlanRejected) -> tuple[int, _ErrorBody]:
             )
         case SeveralApiBases(provider=provider, api_bases=api_bases):
             return status.HTTP_400_BAD_REQUEST, _ErrorBody(
-                error=f"provider '{provider}' is reached at more than one base url, "
-                "so pass api_base to say which one the new key uses",
+                error=f"provider '{provider}' is reached at more than one base url, so pass api_base to say which one "
+                "the new key uses, or null for the provider's own default",
                 api_bases=api_bases,
             )
         case UnknownModels(provider=provider, unknown=unknown, configured=configured):

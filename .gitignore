@@ -147,3 +147,6 @@ crash.*.log
 
 ui/litellm-dashboard/out/
 litellm.log
+
+# the deployed Caddyfile names one server; Caddyfile.example is the committed one
+/Caddyfile

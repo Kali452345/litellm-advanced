@@ -57,6 +57,17 @@ printf 'LITELLM_MASTER_KEY=sk-%s\nLITELLM_SALT_KEY=sk-%s\nPOSTGRES_PASSWORD=%s\n
    it wherever you keep the backups. A `DATABASE_URL` in `.env` is ignored here, since the
    compose file sets it explicitly to the `db` service
 
+   Signing in to the dashboard means typing the master key as the password, since that is
+   the default. To sign in with something typeable instead, add the pair you want:
+
+```bash
+printf 'UI_USERNAME=%s\nUI_PASSWORD=%s\n' "someone" "$(openssl rand -base64 18)" >> .env
+```
+
+   That password reaches admin on the whole proxy, so treat a short one as a decision to
+   keep the port off the internet. Changing either line takes effect on the next
+   `up -d`, and the master key keeps working as the API credential either way
+
 3. Build and start it. The first build takes several minutes and boot then applies every
    migration before the port answers:
 
@@ -89,25 +100,31 @@ TLS reverse proxy in front
 ssh -N -L 4000:127.0.0.1:4000 you@server
 ```
 
-With that open, http://127.0.0.1:4000/ui/ is the dashboard, signing in as `admin` with the
-master key as the password, and a harness on your laptop points at the tunnel exactly the
+With that open, http://127.0.0.1:4000/ui/ is the dashboard, signing in with the
+`UI_USERNAME` and `UI_PASSWORD` pair from `.env` or, when you set neither, as `admin` with
+the master key as the password. A harness on your laptop points at the tunnel exactly the
 way it pointed at the local proxy:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:4000 && export ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY
 ```
 
-For harnesses running somewhere else, give it a hostname and let Caddy hold the
-certificate, which is two lines in a `Caddyfile` on the server:
+For harnesses running somewhere else, or a dashboard you want to open from any browser,
+the compose file carries a Caddy service that holds the certificate and forwards to the
+proxy over the private network. It sits behind a profile, so it starts only when asked:
 
-```
-litellm.example.com {
-    reverse_proxy 127.0.0.1:4000
-}
+```bash
+cp Caddyfile.example Caddyfile && docker compose -f docker-compose.prod.yml --profile tls up -d
 ```
 
-Publish port 4000 to the world only behind TLS, and only with a master key you generated
-rather than one you typed
+Edit the addresses in that copy first. A hostname pointed at the server gets a publicly
+trusted certificate on its own, and a bare IP gets one Caddy signs itself, which encrypts
+the same way while every browser warns once about the unknown issuer. Ports 80 and 443
+have to be open on the host firewall and in whatever the provider puts in front of it,
+and 4000 stays on loopback either way, so the only way in is through Caddy
+
+Publish it to the world only behind TLS, and only with a master key you generated rather
+than one you typed
 
 ## Bringing over the keys you already added
 

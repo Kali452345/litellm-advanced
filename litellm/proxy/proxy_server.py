@@ -15175,7 +15175,12 @@ async def fallback_login(request: Request):
 @router.post("/login", include_in_schema=False)  # hidden since this is a helper for UI sso login
 async def login(request: Request):
     global premium_user, general_settings, master_key
-    from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object, encode_ui_session_jwt
+    from litellm.proxy.auth.login_utils import (
+        authenticate_user,
+        create_ui_token_object,
+        encode_ui_session_jwt,
+        set_ui_session_cookie,
+    )
     from litellm.proxy.utils import get_custom_url
 
     form: Final = await request.form()
@@ -15226,6 +15231,7 @@ async def login(request: Request):
                 jwt_token=jwt_token,
                 redis_usage_cache=redis_usage_cache,
                 user_api_key_cache=user_api_key_cache,
+                request=request,
             )
         except Exception:  # noqa: BLE001  # resuming must NEVER block a completed sign-in
             # The symmetric half of _persist_return_to_cookie's "never raises" contract. The resumer
@@ -15240,7 +15246,7 @@ async def login(request: Request):
 
     # Create redirect response with cookie
     redirect_response: Final = RedirectResponse(url=litellm_dashboard_ui, status_code=303)
-    redirect_response.set_cookie(key="token", value=jwt_token)
+    set_ui_session_cookie(redirect_response, request, jwt_token)
     if cp_return_to:
         redirect_response.delete_cookie(key="litellm_cp_return_to")
     return redirect_response
@@ -15249,7 +15255,12 @@ async def login(request: Request):
 @router.post("/v2/login", include_in_schema=False)  # hidden helper for UI logins via API
 async def login_v2(request: Request):
     global premium_user, general_settings, master_key
-    from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object, encode_ui_session_jwt
+    from litellm.proxy.auth.login_utils import (
+        authenticate_user,
+        create_ui_token_object,
+        encode_ui_session_jwt,
+        set_ui_session_cookie,
+    )
     from litellm.proxy.utils import get_custom_url
 
     try:
@@ -15283,7 +15294,7 @@ async def login_v2(request: Request):
             content={"redirect_url": litellm_dashboard_ui, "token": jwt_token},
             status_code=status.HTTP_200_OK,
         )
-        json_response.set_cookie(key="token", value=jwt_token)
+        set_ui_session_cookie(json_response, request, jwt_token)
         return json_response
     except Exception as e:
         verbose_proxy_logger.exception("litellm.proxy.proxy_server.login_v2(): Exception occurred - %s", e)
@@ -15382,6 +15393,8 @@ async def login_v3(request: Request):
 
 @router.post("/v3/login/exchange", include_in_schema=False)  # exchange single-use opaque code for JWT
 async def login_v3_exchange(request: Request):
+    from litellm.proxy.auth.login_utils import set_ui_session_cookie
+
     try:
         if not general_settings.get("control_plane_url"):
             raise ProxyException(
@@ -15428,7 +15441,7 @@ async def login_v3_exchange(request: Request):
             },
             status_code=status.HTTP_200_OK,
         )
-        json_response.set_cookie(key="token", value=cached_data["token"])
+        set_ui_session_cookie(json_response, request, cached_data["token"])
         return json_response
     except ProxyException:
         raise

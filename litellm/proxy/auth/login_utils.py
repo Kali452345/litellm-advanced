@@ -9,9 +9,10 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Final, Literal, cast
+from urllib.parse import urlparse
 
 import jwt
-from fastapi import HTTPException
+from fastapi import HTTPException, Request, Response
 
 import litellm
 from litellm.constants import LITELLM_PROXY_ADMIN_NAME, LITELLM_UI_SESSION_DURATION
@@ -33,6 +34,7 @@ from litellm.proxy.management_endpoints.ui_sso import (
 )
 from litellm.proxy.utils import (
     PrismaClient,
+    get_custom_url,
     get_server_root_path,
     hash_password,
     verify_password,
@@ -338,6 +340,26 @@ def encode_ui_session_jwt(returned_ui_token_object: ReturnedUITokenObject, maste
     """
     claims: Final = {**cast(dict, returned_ui_token_object), "exp": _ui_session_exp_timestamp()}
     return jwt.encode(claims, master_key, algorithm="HS256")
+
+
+def set_ui_session_cookie(response: Response, request: Request, jwt_token: str) -> None:
+    """Set the ``token`` UI session cookie, marked ``Secure`` when the origin the browser gets sent
+    back to is https, so the session key cannot be replayed over a plaintext hop.
+
+    The scheme comes from the same ``get_custom_url`` resolution the login redirect itself uses
+    (``PROXY_BASE_URL`` when set, else this request's own base url), so the flag always matches the
+    origin that will send the cookie back. An http deployment, an ssh tunnel included, resolves to
+    http and keeps an unflagged cookie, because a ``Secure`` cookie there is dropped by the browser
+    and the dashboard would bounce straight back to the login form.
+
+    Deliberately not ``HttpOnly``: the dashboard reads this cookie from JS, and a reverse proxy that
+    adds ``HttpOnly`` in front of the proxy is the known cause of an infinite login redirect.
+
+    The single place every UI login path (SSO and username/password ``/login``, ``/v2``, ``/v3``)
+    sets the cookie, so its flags cannot drift between paths.
+    """
+    secure: Final = urlparse(get_custom_url(str(request.base_url))).scheme == "https"
+    response.set_cookie(key="token", value=jwt_token, secure=secure)
 
 
 def create_ui_token_object(

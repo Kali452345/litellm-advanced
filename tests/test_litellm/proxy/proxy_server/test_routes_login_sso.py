@@ -10,9 +10,14 @@ Routes covered:
 
 from __future__ import annotations
 
+from http.cookies import SimpleCookie
+from typing import Final, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from .conftest import normalize
 
@@ -401,6 +406,47 @@ def test_login_form_honors_same_origin_return_to_cookie(client, monkeypatch):
     )
     assert response.status_code == 303
     assert response.headers.get("location", "") == return_to  # resumed the connect flow, not the dashboard
+
+
+def _post_login(client: TestClient, return_to: str | None = None) -> httpx.Response:
+    return cast(
+        httpx.Response,
+        client.post(
+            "/login",
+            data={"username": "admin", "password": "password"},
+            cookies={"litellm_cp_return_to": return_to} if return_to is not None else None,
+            follow_redirects=False,
+        ),
+    )
+
+
+def _token_cookie_attrs(response: httpx.Response) -> SimpleCookie:
+    jar: SimpleCookie = SimpleCookie()
+    for header in response.headers.get_list("set-cookie"):
+        jar.load(header)
+    return jar
+
+
+def test_login_over_https_marks_the_session_cookie_secure(app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The token cookie seals a virtual key carrying the signer-in's role, so behind TLS it has to be
+    Secure or a single plaintext request to the same host replays the whole admin session. Asserted on
+    the resume arm because that one sets the cookie from its own branch."""
+    _install_login_mocks(monkeypatch)
+    return_to: Final = "/mcp/authorize?client_id=llm_dcrc_abc&response_type=code"
+    tls_client: Final = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+    response: Final = _post_login(tls_client, return_to)
+    assert response.status_code == 303
+    assert response.headers.get("location", "") == return_to
+    assert _token_cookie_attrs(response)["token"]["secure"] is True
+
+
+def test_login_over_http_leaves_the_session_cookie_usable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A browser drops a Secure cookie on an http origin, so an http deployment (an ssh tunnel to the
+    proxy included) must keep the flag off or the dashboard bounces back to the login form forever."""
+    _install_login_mocks(monkeypatch)
+    response: Final = _post_login(client)
+    assert response.status_code == 303
+    assert not _token_cookie_attrs(response)["token"]["secure"]
     assert "token=" in response.headers.get("set-cookie", "")
 
 

@@ -8,6 +8,7 @@ the provider is read.
 import httpx
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from litellm.exceptions import RateLimitError
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
@@ -202,3 +203,11 @@ async def test_probing_is_denied_to_every_role_but_the_proxy_admin(role: Litellm
         )
 
     assert raised.value.status_code == 403
+
+
+@pytest.mark.parametrize("field", ["langfuse_host", "aws_web_identity_token", "vertex_credentials"])
+def test_a_credential_field_outside_the_schema_is_refused(field: str):
+    """This route carries a base url on purpose, so the request-body blocklist skips it and
+    the schema is the only thing left refusing the rest of what that blocklist covers."""
+    with pytest.raises(ValidationError):
+        ProbeRateLimitRequest(**{"model": "gemini/gemini-2.5-flash", "api_key": "k1", field: "https://attacker.test"})

@@ -9,6 +9,7 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.management_endpoints.provider_profile_endpoints import (
@@ -428,3 +429,11 @@ async def test_adding_a_key_is_denied_to_every_role_but_the_proxy_admin(role: Li
         )
 
     assert raised.value.status_code == 403
+
+
+@pytest.mark.parametrize("field", ["langfuse_host", "aws_web_identity_token", "vertex_credentials"])
+def test_a_credential_field_outside_the_schema_is_refused(field: str):
+    """This route carries a base url on purpose, so the request-body blocklist skips it and
+    the schema is the only thing left refusing the rest of what that blocklist covers."""
+    with pytest.raises(ValidationError):
+        AddProviderKeyRequest(**{"provider": "gemini", "api_key": "k1", field: "https://attacker.test"})

@@ -137,6 +137,24 @@ and Caddy then has nothing to pick a certificate by. Ports 80 and 443 have to be
 the host firewall and in whatever the provider puts in front of it, and 4000 stays on
 loopback either way, so the only way in is through Caddy
 
+A provider firewall that is still closed does not announce itself. An outside request just
+times out, which reads like a listener that never came up, and Caddy's log repeats
+`Timeout during connect (likely firewall problem)` while it retries the certificate for up
+to 30 days. Checking from the server settles nothing either, because a public address the
+provider translates at the edge is usually unreachable from inside the instance. Point curl
+at loopback and keep the public name in the request:
+
+```bash
+curl -sk --resolve YOUR.PUBLIC.IP:443:127.0.0.1 https://YOUR.PUBLIC.IP/health/readiness
+```
+
+Once the rule is in, restarting Caddy retries issuance right away instead of waiting out a
+backoff that grows to 20 minutes:
+
+```bash
+docker compose -f docker-compose.prod.yml restart caddy
+```
+
 One line in `.env` goes with it, or the proxy reads every forwarded request as plain http
 and sends the browser to an `http://` dashboard right after it signs in:
 

@@ -15,12 +15,15 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     environment:
-      DATABASE_URL: "postgresql://litellm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/litellm"
-      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}"
-      LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in .env}"
-      STORE_MODEL_IN_DB: "True"
-      UI_USERNAME: "${UI_USERNAME:-admin}"
-      UI_PASSWORD: "${UI_PASSWORD:-${LITELLM_MASTER_KEY}}"
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/litellm
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in .env}
+      - STORE_MODEL_IN_DB=True
+      - UI_USERNAME=${UI_USERNAME:-admin}
+      - UI_PASSWORD=${UI_PASSWORD:-${LITELLM_MASTER_KEY}}
+      # passed through only when set, since an empty one would make every absolute
+      # url the proxy builds relative
+      - PROXY_BASE_URL
     # loopback only: put a TLS reverse proxy in front, or reach it over an ssh tunnel
     ports:
       - "127.0.0.1:4000:4000"

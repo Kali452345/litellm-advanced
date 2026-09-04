@@ -131,9 +131,21 @@ cp Caddyfile.example Caddyfile && docker compose -f docker-compose.prod.yml --pr
 
 Edit the addresses in that copy first. A hostname pointed at the server gets a publicly
 trusted certificate on its own, and a bare IP gets one Caddy signs itself, which encrypts
-the same way while every browser warns once about the unknown issuer. Ports 80 and 443
-have to be open on the host firewall and in whatever the provider puts in front of it,
-and 4000 stays on loopback either way, so the only way in is through Caddy
+the same way while every browser warns once about the unknown issuer. A bare IP also needs
+`default_sni` naming it in the global block, because a browser sends no SNI for an address
+and Caddy then has nothing to pick a certificate by. Ports 80 and 443 have to be open on
+the host firewall and in whatever the provider puts in front of it, and 4000 stays on
+loopback either way, so the only way in is through Caddy
+
+One line in `.env` goes with it, or the proxy reads every forwarded request as plain http
+and sends the browser to an `http://` dashboard right after it signs in:
+
+```bash
+echo 'FORWARDED_ALLOW_IPS=172.16.0.0/12' >> .env
+```
+
+That range is where Docker puts its bridge networks, so it trusts the forwarded scheme
+from the Caddy container and from nothing on the internet
 
 Publish it to the world only behind TLS, and only with a master key you generated rather
 than one you typed

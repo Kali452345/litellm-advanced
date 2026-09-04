@@ -1,6 +1,13 @@
 # Copy to ./Caddyfile and edit the addresses, then bring the stack up with
 # `docker compose -f docker-compose.prod.yml --profile tls up -d`
 
+# A browser sends no SNI when the address bar holds an IP, so name the IP site here
+# or Caddy has nothing to choose a certificate by and the handshake fails. Drop the
+# block when every address below is a hostname.
+{
+	default_sni 203.0.113.10
+}
+
 # A hostname pointed at this server gets a real certificate over HTTP-01, so
 # no browser warning. Delete this block if you do not have one.
 litellm.example.com {

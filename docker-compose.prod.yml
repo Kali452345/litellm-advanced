@@ -24,6 +24,9 @@ services:
       # passed through only when set, since an empty one would make every absolute
       # url the proxy builds relative
       - PROXY_BASE_URL
+      # uvicorn only honours X-Forwarded-Proto from addresses listed here, so without it
+      # a request through the caddy service looks like plain http to the proxy
+      - FORWARDED_ALLOW_IPS
     # loopback only: put a TLS reverse proxy in front, or reach it over an ssh tunnel
     ports:
       - "127.0.0.1:4000:4000"

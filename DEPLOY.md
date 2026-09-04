@@ -68,20 +68,32 @@ printf 'UI_USERNAME=%s\nUI_PASSWORD=%s\n' "someone" "$(openssl rand -base64 18)"
    keep the port off the internet. Changing either line takes effect on the next
    `up -d`, and the master key keeps working as the API credential either way
 
-3. Build and start it. The first build takes several minutes and boot then applies every
+3. Write the `config.yaml` the compose file mounts. It is gitignored, so a fresh clone does
+   not carry one, and Docker turns a missing bind source into a directory rather than
+   telling you:
+
+```bash
+printf 'general_settings:\n  store_model_in_db: true\n\nrouter_settings:\n  enable_quota_routing: true\n  quota_max_wait_seconds: 75\n  num_retries: 3\n\nlitellm_settings:\n  drop_params: true\n' > config.yaml
+```
+
+   `num_retries` bounds how many keys one request may walk, so a pool deeper than four
+   wants a higher number. Everything else, the providers, their keys and the per-minute and
+   per-day caps, is added through the dashboard and lives in the database
+
+4. Build and start it. The first build takes several minutes and boot then applies every
    migration before the port answers:
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-4. Watch it come up:
+5. Watch it come up:
 
 ```bash
 docker compose -f docker-compose.prod.yml logs -f litellm
 ```
 
-5. Check that it serves and that it reached the database:
+6. Check that it serves and that it reached the database:
 
 ```bash
 curl -s http://127.0.0.1:4000/health/readiness

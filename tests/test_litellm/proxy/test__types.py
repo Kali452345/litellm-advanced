@@ -11,6 +11,7 @@ from litellm.proxy._types import (
     LiteLLM_TeamMembership,
     LitellmUserRoles,
     OrganizationMemberUpdateRequest,
+    ProxyException,
     ResetSpendRequest,
     UpdateKeyRequest,
     UpdateUserRequest,
@@ -277,3 +278,17 @@ def test_team_membership_budget_table_present_still_works():
     }
     result = LiteLLM_TeamMembership.model_validate(data)
     assert result.litellm_budget_table is None
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("No deployments available for selected model, Try again in 5 seconds.", "429"),
+        ("No healthy deployment available", "429"),
+        ("Not allowed to access model due to tags configuration", "401"),
+        ("OpenAIException - the provider is having a bad day", "500"),
+    ],
+)
+def test_a_router_refusal_is_served_as_the_code_its_message_implies(message: str, expected: str):
+    """A pool with nothing left to try answers 429, not the 500 the raised ValueError would be."""
+    assert ProxyException(message=message, type="None", param=None, code=500).code == expected

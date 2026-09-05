@@ -17,7 +17,20 @@ from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, Optional, Protocol, TypeVar, Union, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    Optional,
+    Protocol,
+    TypeVar,
+    Union,
+    assert_never,
+    cast,
+    overload,
+)
 
 from typing_extensions import ReadOnly, TypedDict
 
@@ -29,6 +42,12 @@ from litellm.constants import (
     SPEND_LOG_QUEUE_MAX_BYTES,
     SPEND_LOG_WRITE_BATCH_MAX_BYTES,
     SPEND_LOG_WRITE_BATCH_MAX_ROWS,
+)
+from litellm.litellm_core_utils.process_liveness import (
+    ChildProcess,
+    Liveness,
+    child_liveness,
+    pid_liveness,
 )
 from litellm.proxy._types import (
     CommonProxyErrors,
@@ -3668,6 +3687,7 @@ class PrismaClient:
         self._reconnect_escalation_threshold: int = max(1, int(os.getenv("PRISMA_RECONNECT_ESCALATION_THRESHOLD", "3")))
         self._engine_pidfd: int = -1
         self._engine_pid: int = 0
+        self._engine_child: ChildProcess | None = None
         self._watching_engine: bool = False
         self._engine_confirmed_dead: bool = False
         self._engine_wait_thread: threading.Thread | None = None
@@ -4885,8 +4905,8 @@ class PrismaClient:
             )
             raise e
 
-    def _get_engine_pid(self) -> int:
-        """Get the PID of the writer's engine subprocess, or 0 if unavailable.
+    def _get_engine_child(self) -> ChildProcess | None:
+        """The query engine's own process object, or None when it cannot be reached.
 
         Must never raise: prisma's ``_engine`` property raises
         ``ClientNotConnectedError`` on a disconnected client, and an exception
@@ -4895,27 +4915,29 @@ class PrismaClient:
         try:
             prisma_obj: Final = self.writer_db._original_prisma
             if prisma_obj.is_connected() is not True:
-                return 0
+                return None
             engine: Final = prisma_obj._engine
             process: Final = getattr(engine, "process", None) if engine is not None else None
-            if process is not None:
-                pid: Final[object] = process.pid
-                if isinstance(pid, int):
-                    return pid
+            if isinstance(process, ChildProcess):
+                return process
         except (AttributeError, TypeError):
             pass
-        return 0
+        return None
+
+    @staticmethod
+    def _child_pid(child: ChildProcess | None) -> int:
+        pid: Final[object] = child.pid if child is not None else None
+        return pid if isinstance(pid, int) else 0
+
+    def _engine_liveness(self) -> Liveness:
+        """Ask the engine's own process object first: a PID alone cannot answer this on Windows."""
+        child: Final = self._engine_child
+        return child_liveness(child) if child is not None else pid_liveness(self._engine_pid)
 
     def _is_engine_alive(self) -> bool:
         if self._engine_pid <= 0:
             return True
-        try:
-            os.kill(self._engine_pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except (PermissionError, OSError):
-            return True
+        return self._engine_liveness() is not Liveness.DEAD
 
     @staticmethod
     def _reap_all_zombies() -> set:
@@ -4950,7 +4972,7 @@ class PrismaClient:
 
         Returns True if the thread was started, False on failure.
         On Windows, returns False immediately (os.waitpid/WNOHANG are Unix-only);
-        caller falls back to os.kill polling.
+        caller falls back to polling the engine's own process object.
         """
         if sys.platform == "win32":
             return False
@@ -5129,43 +5151,46 @@ class PrismaClient:
         )
 
     async def _poll_engine_proc(self) -> None:
-        """poll via os.kill(pid, 0) every 1s.
+        """poll the engine's own process object every 1s.
         Only used when BOTH waitpid thread and pidfd are unavailable
-        (e.g., PID is not our child process and pidfd_open fails)
+        (e.g., PID is not our child process and pidfd_open fails, or we are on Windows)
         """
         while self._watching_engine and self._engine_pid > 0:
-            try:
-                os.kill(self._engine_pid, 0)
-            except ProcessLookupError:
-                dead_pid = self._engine_pid
-                if self._consume_expected_death(dead_pid):
-                    verbose_proxy_logger.info(
-                        "prisma-query-engine PID %s gone as part of a planned "
-                        "restart; not reconnecting (engine already replaced).",
+            liveness = self._engine_liveness()
+            match liveness:
+                case Liveness.ALIVE:
+                    await asyncio.sleep(1)
+                case Liveness.DEAD:
+                    dead_pid = self._engine_pid
+                    if self._consume_expected_death(dead_pid):
+                        verbose_proxy_logger.info(
+                            "prisma-query-engine PID %s gone as part of a planned "
+                            "restart; not reconnecting (engine already replaced).",
+                            dead_pid,
+                        )
+                        self._cleanup_engine_watcher()
+                        return
+                    verbose_proxy_logger.error(
+                        "prisma-query-engine PID %s gone; triggering reconnect.",
                         dead_pid,
+                    )
+                    self._engine_confirmed_dead = True
+                    self._reap_all_zombies()
+                    self._cleanup_engine_watcher()
+                    await self.attempt_db_reconnect(
+                        reason="engine_process_death",
+                        force=True,
+                    )
+                    return
+                case Liveness.UNKNOWN:
+                    verbose_proxy_logger.debug(
+                        "Cannot tell whether PID %s is still alive; stopping engine poll.",
+                        self._engine_pid,
                     )
                     self._cleanup_engine_watcher()
                     return
-                verbose_proxy_logger.error(
-                    "prisma-query-engine PID %s gone; triggering reconnect.",
-                    dead_pid,
-                )
-                self._engine_confirmed_dead = True
-                self._reap_all_zombies()
-                self._cleanup_engine_watcher()
-                await self.attempt_db_reconnect(
-                    reason="engine_process_death",
-                    force=True,
-                )
-                return
-            except (PermissionError, OSError):
-                verbose_proxy_logger.debug(
-                    "Cannot signal PID %s; stopping engine poll.",
-                    self._engine_pid,
-                )
-                self._cleanup_engine_watcher()
-                return
-            await asyncio.sleep(1)
+                case _:
+                    assert_never(liveness)
 
     def _cleanup_engine_watcher(self) -> None:
         """Clean up pidfd reader, waitpid thread ref, or stop polling and reset state."""
@@ -5182,6 +5207,7 @@ class PrismaClient:
             self._engine_pidfd = -1
         self._engine_wait_thread = None
         self._engine_pid = 0
+        self._engine_child = None
 
     async def _start_engine_watcher(self) -> None:
         """
@@ -5190,17 +5216,19 @@ class PrismaClient:
         Detection priority:
         1. os.waitpid() in a dedicated thread, works with all event loops.
         2. pidfd_open kernel fd registered with asyncio.
-        3. os.kill(pid, 0) polling (1s), last-resort fallback when neither
-           waitpid thread nor pidfd are available.
+        3. polling the engine's own process object (1s), last-resort fallback when
+           neither waitpid thread nor pidfd are available.
 
         """
         if self._watching_engine or self._engine_pidfd >= 0 or self._engine_wait_thread is not None:
             return
-        pid: Final = self._get_engine_pid()
+        child: Final = self._get_engine_child()
+        pid: Final = self._child_pid(child)
         if pid == 0:
             verbose_proxy_logger.debug("Could not find prisma-query-engine PID; engine death detection unavailable.")
             return
         self._engine_pid = pid
+        self._engine_child = child
         self._engine_confirmed_dead = False
         verbose_proxy_logger.info("Found prisma-query-engine at PID %s.", pid)
         waitpid_ok: Final = self._try_waitpid_watch(pid)
@@ -5217,7 +5245,7 @@ class PrismaClient:
             )
         else:
             verbose_proxy_logger.info(
-                "Watching engine PID %s via os.kill polling.",
+                "Watching engine PID %s via process polling.",
                 pid,
             )
             self._watching_engine = True
@@ -5633,7 +5661,7 @@ class PrismaClient:
     async def start_db_health_watchdog_task(self) -> None:
         """Start background tasks that monitor DB health:
         - A periodic SELECT 1 probe that triggers reconnect on network/connection failure.
-        - A process-level watcher that detects engine death via waitpid thread, pidfd, or os.kill polling.
+        - A process-level watcher that detects engine death via waitpid thread, pidfd, or process polling.
         """
         if self._db_health_watchdog_enabled is not True:
             verbose_proxy_logger.debug("Prisma DB health watchdog disabled via PRISMA_HEALTH_WATCHDOG_ENABLED")

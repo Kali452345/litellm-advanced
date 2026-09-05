@@ -6,7 +6,7 @@ import datetime
 import enum
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar, get_type_hints
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeAlias, TypeVar, get_type_hints
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -34,6 +34,12 @@ class ConfigurableClientsideParamsCustomAuth(TypedDict):
 
 
 CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = list[str | ConfigurableClientsideParamsCustomAuth] | None
+
+# Free tiers differ: some meter a whole account, others meter each model on it,
+# so which models share a credential's counters is configurable.
+QuotaScopeMode: TypeAlias = Literal["credential", "credential_model"]
+
+PinnedParamValue: TypeAlias = bool | int | float | str
 
 
 class ModelConfig(BaseModel):
@@ -125,9 +131,11 @@ class UpdateRouterConfig(BaseModel):
     retry_after: float | None = None
     fallbacks: list[dict] | None = None
     context_window_fallbacks: list[dict] | None = None
-    model_group_alias: dict[str, str | dict] | None = {}
+    model_group_alias: dict[str, str | dict] | None = None
     enable_tag_filtering: bool | None = None
     tag_routing_prefix: str | None = None
+    enable_quota_routing: bool | None = None
+    quota_max_wait_seconds: float | None = None
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -294,6 +302,17 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
     rpm: int | None = None
     itpm: int | None = None
     otpm: int | None = None
+    # `rpd` caps a calendar day the way `rpm` caps a minute. Both count per
+    # credential, not per deployment, so one key's models share the allowance.
+    rpd: int | None = None
+    quota_reset_timezone: str | None = None
+    quota_scope: QuotaScopeMode | None = None
+    quota_scope_id: str | None = None
+    # Every other param here is a default the caller's request overrides. These
+    # replace what the caller sent, for providers that reject a value the client
+    # hardcodes. `additional_drop_params` removes a param outright instead.
+    pinned_params: Mapping[str, PinnedParamValue] | None = None
+    additional_drop_params: list[str] | None = None  # mutable-ok: `_should_drop_param` needs a real `list`
     timeout: float | str | httpx.Timeout | None = None  # if str, pass in as os.environ/
     stream_timeout: float | str | None = None  # timeout when making stream=True calls, if str, pass in as os.environ/
     max_retries: int | None = None
@@ -447,6 +466,10 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     rpm: int | None
     itpm: int | None
     otpm: int | None
+    rpd: ReadOnly[int | None]
+    quota_reset_timezone: ReadOnly[str | None]
+    quota_scope: ReadOnly[QuotaScopeMode | None]
+    quota_scope_id: ReadOnly[str | None]
     order: int | None
     weight: int | None
     max_parallel_requests: int | None
@@ -462,6 +485,9 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     )
     ## DROP PARAMS ##
     drop_params: bool | None
+    additional_drop_params: ReadOnly[list[str] | None]  # mutable-ok: `_should_drop_param` needs a real `list`
+    ## PINNED PARAMS ##
+    pinned_params: ReadOnly[Mapping[str, PinnedParamValue] | None]
     ## RESPONSES API → CHAT COMPLETIONS BRIDGE ##
     use_chat_completions_api: bool | None
     ## PASS-THROUGH ENDPOINTS ##
@@ -518,6 +544,13 @@ class DeploymentTypedDict(TypedDict, total=False):
 
 
 SPECIAL_MODEL_INFO_PARAMS = tuple(MirroredPricingParams.model_fields)
+
+QUOTA_PARAM_NAMES: Final = ("rpd", "quota_scope", "quota_scope_id", "quota_reset_timezone")
+
+# Operator-set params living in `litellm_params` alone, which a patch must be able to
+# take back off. `update_db_model` merges a patch with `exclude_none=True`, so a null
+# is dropped rather than merged, and a value set once would otherwise be permanent.
+UNSETTABLE_LITELLM_PARAM_NAMES: Final = (*QUOTA_PARAM_NAMES, "pinned_params", "additional_drop_params")
 
 
 class Deployment(BaseModel):
@@ -589,6 +622,27 @@ class RouterErrors(enum.Enum):
         "Every deployment for it is a strategy router marker (auto_router/...), which is not a callable "
         "model, and no pre-routing strategy selected a deployment for this request"
     )
+
+
+_NO_DEPLOYMENT_MESSAGES: Final = (
+    "No healthy deployment available",
+    RouterErrors.no_deployments_available.value,
+)
+
+
+def router_error_status_code(message: str) -> Literal["429", "401"] | None:
+    """
+    The status code the proxy answers a router refusal with, read off the refusal's message.
+
+    Router refusals are plain `ValueError`s carrying no status code of their own, so the
+    message is the only thing that says what the caller was served, and an error log row
+    recording anything else is not a log of that response.
+    """
+    if any(text in message for text in _NO_DEPLOYMENT_MESSAGES):
+        return "429"
+    if RouterErrors.no_deployments_with_tag_routing.value in message:
+        return "401"
+    return None
 
 
 class AllowedFailsPolicy(BaseModel):

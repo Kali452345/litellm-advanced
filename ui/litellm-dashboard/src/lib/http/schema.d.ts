@@ -8868,6 +8868,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/model/quota/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Model Quota Usage
+         * @description What each pool of keys has spent and has left of its per-minute and per-day allowance
+         */
+        get: operations["get_model_quota_usage_model_quota_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/model/settings": {
         parameters: {
             query?: never;
@@ -12062,6 +12082,86 @@ export interface paths {
         get: operations["provider_budgets_provider_budgets_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/provider/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Provider Key
+         * @description Put another api key behind a provider, one deployment per model that provider serves
+         */
+        post: operations["add_provider_key_provider_keys_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/provider/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Provider Profiles
+         * @description What each configured provider is set up with, so putting another key behind it is one call
+         */
+        get: operations["list_provider_profiles_provider_profiles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/provider/rate_limit/observed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Observed Rate Limits
+         * @description What providers actually allowed, derived from the rate limit refusals already logged
+         */
+        get: operations["get_observed_rate_limits_provider_rate_limit_observed_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/provider/rate_limit/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Probe Provider Rate Limit
+         * @description Send requests to one api key until the provider rate limits it, and report how many it accepted
+         */
+        post: operations["probe_provider_rate_limit_provider_rate_limit_probe_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -22657,6 +22757,56 @@ export interface components {
              */
             quality: number;
         };
+        /** AddProviderKeyRequest */
+        AddProviderKeyRequest: {
+            /**
+             * Api Base
+             * @description The new key's base url. Omit it to inherit the provider's, or send null for the provider's own default, which is what a provider reached at both its own url and a custom one needs
+             */
+            api_base?: string | null;
+            /**
+             * Api Key
+             * @description The new key
+             */
+            api_key: string;
+            /**
+             * Models
+             * @description Which of the provider's model names to serve, defaulting to all of them
+             */
+            models?: string[] | null;
+            /**
+             * Provider
+             * @description The provider to add the key to, as reported by /provider/profiles
+             */
+            provider: string;
+            /**
+             * Quota Scope
+             * @description Whether the caps count per model this key serves ('credential_model') or once across all of them ('credential'), which is what a provider metering the whole account needs. Omitted copies what the provider's existing keys use
+             */
+            quota_scope?: ("credential" | "credential_model") | null;
+            /**
+             * Rpd
+             * @description Overrides the per-day cap copied from the provider
+             */
+            rpd?: number | null;
+            /**
+             * Rpm
+             * @description Overrides the per-minute cap copied from the provider
+             */
+            rpm?: number | null;
+        };
+        /** AddProviderKeyResponse */
+        AddProviderKeyResponse: {
+            /** Api Base */
+            api_base?: string | null;
+            /**
+             * Models
+             * @default []
+             */
+            models: components["schemas"]["AddedModel"][];
+            /** Provider */
+            provider: string;
+        };
         /** AddTeamCallback */
         AddTeamCallback: {
             /** Callback Name */
@@ -22670,6 +22820,17 @@ export interface components {
             callback_vars: {
                 [key: string]: string;
             };
+        };
+        /** AddedModel */
+        AddedModel: {
+            /** Error */
+            error?: string | null;
+            /** Litellm Model */
+            litellm_model: string;
+            /** Model Id */
+            model_id?: string | null;
+            /** Model Name */
+            model_name: string;
         };
         /**
          * AgentCapabilities
@@ -24568,6 +24729,7 @@ export interface components {
         /** ChatCompletionAudioObject */
         ChatCompletionAudioObject: {
             input_audio: components["schemas"]["InputAudio"];
+            prompt_cache_breakpoint?: components["schemas"]["PromptCacheBreakpoint"];
             /**
              * Type
              * @constant
@@ -27786,6 +27948,37 @@ export interface components {
             metadata?: components["schemas"]["KeyMetadata"];
             metrics: components["schemas"]["SpendMetrics"];
         };
+        /** KeyQuotaUsage */
+        KeyQuotaUsage: {
+            /** Api Base */
+            api_base?: string | null;
+            /**
+             * Exhausted
+             * @description Whether any of this key's windows is spent, so routing will skip it
+             */
+            exhausted: boolean;
+            /**
+             * Litellm Model
+             * @description The model string the provider itself is sent
+             */
+            litellm_model: string;
+            /**
+             * Model Id
+             * @description The deployment id this key serves this model under
+             */
+            model_id: string;
+            /**
+             * Seconds Until Room
+             * @description When this key can take another request, null when it can right now
+             */
+            seconds_until_room?: number | null;
+            /**
+             * Windows
+             * @description Empty when this key has no cap configured, so nothing meters it
+             * @default []
+             */
+            windows: components["schemas"]["QuotaWindowUsage"][];
+        };
         /** KeyRequest */
         KeyRequest: {
             /** Key Aliases */
@@ -28888,6 +29081,8 @@ export interface components {
             } | null;
             /** Adaptive Router Default Model */
             adaptive_router_default_model?: string | null;
+            /** Additional Drop Params */
+            additional_drop_params?: string[] | null;
             /**
              * Allow Client Keepalive Override
              * @default false
@@ -29162,12 +29357,22 @@ export interface components {
             output_cost_per_video_token?: number | null;
             /** Output Vector Size */
             output_vector_size?: number | null;
+            /** Pinned Params */
+            pinned_params?: {
+                [key: string]: boolean | number | string;
+            } | null;
             /** Quality Router Config */
             quality_router_config?: {
                 [key: string]: unknown;
             } | null;
             /** Quality Router Default Model */
             quality_router_default_model?: string | null;
+            /** Quota Reset Timezone */
+            quota_reset_timezone?: string | null;
+            /** Quota Scope */
+            quota_scope?: ("credential" | "credential_model") | null;
+            /** Quota Scope Id */
+            quota_scope_id?: string | null;
             /** Region Name */
             region_name?: string | null;
             /** Regional Endpoint Uplift Multiplier */
@@ -29176,6 +29381,8 @@ export interface components {
             regional_processing_uplift_multiplier_eu?: number | null;
             /** Regional Processing Uplift Multiplier Us */
             regional_processing_uplift_multiplier_us?: number | null;
+            /** Rpd */
+            rpd?: number | null;
             /** Rpm */
             rpm?: number | null;
             /** S3 Bucket Name */
@@ -31402,6 +31609,24 @@ export interface components {
             /** Model Name */
             model_name: string;
         };
+        /** ModelQuotaUsageResponse */
+        ModelQuotaUsageResponse: {
+            /**
+             * Enforced
+             * @description Whether the router was built with enable_quota_routing. False means the caps below are reported as configured but nothing counts against them, so every count stays at zero
+             */
+            enforced: boolean;
+            /**
+             * Max Wait Seconds
+             * @description How long a request is held when every key behind a model is spent. The live budget while enforcement is on, the default it would start with while it is off
+             */
+            max_wait_seconds: number;
+            /**
+             * Pools
+             * @default []
+             */
+            pools: components["schemas"]["PoolQuotaUsage"][];
+        };
         /** ModelResponse */
         ModelResponse: {
             /** Choices */
@@ -32354,6 +32579,104 @@ export interface components {
             password?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** ObservedKeyLimits */
+        ObservedKeyLimits: {
+            /**
+             * Api Base
+             * @default
+             */
+            api_base: string;
+            /**
+             * Last Refusal
+             * Format: date-time
+             */
+            last_refusal: string;
+            /**
+             * Litellm Model Name
+             * @description The model string the provider itself was sent
+             */
+            litellm_model_name: string;
+            /**
+             * Longest Retry After Seconds
+             * @description The longest wait any of these refusals asked for. Seconds point at the minute window, hours at a daily cap that no amount of rotation clears before tomorrow
+             */
+            longest_retry_after_seconds?: number | null;
+            /**
+             * Model Group
+             * @description The name callers ask for, which this key is one of the pool behind
+             */
+            model_group: string;
+            /**
+             * Model Id
+             * @description The deployment id of the key that was refused
+             */
+            model_id: string;
+            /**
+             * Refusals
+             * @description Refusals behind these windows
+             */
+            refusals: number;
+            /**
+             * Windows
+             * @default []
+             */
+            windows: components["schemas"]["ObservedWindow"][];
+        };
+        /** ObservedRateLimitsResponse */
+        ObservedRateLimitsResponse: {
+            /**
+             * Keys
+             * @default []
+             */
+            keys: components["schemas"]["ObservedKeyLimits"][];
+            /** Refusals Read */
+            refusals_read: number;
+            /**
+             * Since
+             * Format: date-time
+             * @description Refusals older than this were not read
+             */
+            since: string;
+            /**
+             * Unmetered Refusals
+             * @description Refusals with no usable count behind them, from quota routing being off, a key with no cap configured, or a window that rolled over as the refusal was recorded
+             */
+            unmetered_refusals: number;
+        };
+        /** ObservedWindow */
+        ObservedWindow: {
+            /**
+             * Configured Limit
+             * @description What this window was capped at when the most recent refusal landed
+             */
+            configured_limit: number;
+            /**
+             * Highest Count At Refusal
+             * @description The largest one, which is worth comparing against the lowest: a spread means the ceiling moves, and a single repeated number means it is a hard cap
+             */
+            highest_count_at_refusal: number;
+            /**
+             * Kind
+             * @description rpm for the minute window, rpd for the day window
+             * @enum {string}
+             */
+            kind: "rpm" | "rpd";
+            /**
+             * Lowest Count At Refusal
+             * @description The smallest spend this window held when a refusal arrived
+             */
+            lowest_count_at_refusal: number;
+            /**
+             * Refusals
+             * @description Refusals that carried a usable count for this window
+             */
+            refusals: number;
+            /**
+             * Suggested Limit
+             * @description One below the lowest refusal, so the highest figure this key is proven to accept. Zero means even the first request of a window was refused, so no per-window cap will fit under this ceiling
+             */
+            suggested_limit: number;
         };
         /**
          * OpenIdConnectSecurityScheme
@@ -33612,12 +33935,77 @@ export interface components {
              */
             version_status: string;
         };
+        /** PoolQuotaUsage */
+        PoolQuotaUsage: {
+            /**
+             * Exhausted
+             * @description Whether every key in this pool is spent, which is when a request fails
+             */
+            exhausted: boolean;
+            /**
+             * Keys
+             * @default []
+             */
+            keys: components["schemas"]["KeyQuotaUsage"][];
+            /**
+             * Model Name
+             * @description The name callers ask for, which every key below is rotated through
+             */
+            model_name: string;
+            /**
+             * Seconds Until Room
+             * @description When this pool gets a slot back, set only once every key in it is spent
+             */
+            seconds_until_room?: number | null;
+        };
+        /** ProbeRateLimitRequest */
+        ProbeRateLimitRequest: {
+            /**
+             * Api Base
+             * @description Where to reach it, or null for the provider's own url
+             */
+            api_base?: string | null;
+            /**
+             * Api Key
+             * @description The key to measure
+             */
+            api_key: string;
+            /**
+             * Api Version
+             * @description Api version, for the providers that need one
+             */
+            api_version?: string | null;
+            /**
+             * Max Requests
+             * @description Give up after this many accepted requests, so a key with a high cap cannot run forever
+             * @default 60
+             */
+            max_requests: number;
+            /**
+             * Model
+             * @description The provider's own model string, as /provider/profiles reports it
+             */
+            model: string;
+        };
         /** Prompt */
         Prompt: {
             litellm_params: components["schemas"]["PromptLiteLLMParams"];
             /** Prompt Id */
             prompt_id: string;
             prompt_info?: components["schemas"]["PromptInfo"] | null;
+        };
+        /**
+         * PromptCacheBreakpoint
+         * @description Marks the exact end of a reusable prompt prefix.
+         *
+         *     The breakpoint inherits its TTL from the request's `prompt_cache_options.ttl`; the boundary is not rounded to a token block.
+         */
+        PromptCacheBreakpoint: {
+            /**
+             * Mode
+             * @constant
+             */
+            mode: "explicit";
         };
         /** PromptInfo */
         PromptInfo: {
@@ -33780,6 +34168,72 @@ export interface components {
             required: boolean;
             /** Tooltip */
             tooltip?: string | null;
+        };
+        /** ProviderProfile */
+        ProviderProfile: {
+            /** Api Base */
+            api_base?: string | null;
+            /** Api Version */
+            api_version?: string | null;
+            /**
+             * Key Count
+             * @description How many distinct credentials already serve these models
+             */
+            key_count: number;
+            /**
+             * Models
+             * @default []
+             */
+            models: components["schemas"]["ProviderProfileModel"][];
+            /** Provider */
+            provider: string;
+            /** Quota Reset Timezone */
+            quota_reset_timezone?: string | null;
+            /** Quota Scope */
+            quota_scope?: ("credential" | "credential_model") | null;
+        };
+        /** ProviderProfileModel */
+        ProviderProfileModel: {
+            /**
+             * Additional Drop Params
+             * @description Params never forwarded to this model, for a provider that rejects them outright. Null when the keys disagree
+             */
+            additional_drop_params?: string[] | null;
+            /**
+             * Litellm Model
+             * @description The model string the provider itself is sent
+             */
+            litellm_model: string;
+            /**
+             * Model Name
+             * @description The name callers ask for, shared by every key behind this provider
+             */
+            model_name: string;
+            /**
+             * Pinned Params
+             * @description Params this model is sent regardless of what the caller asked for, for a provider that rejects a value clients hardcode. Null when the keys disagree
+             */
+            pinned_params?: {
+                [key: string]: boolean | number | string;
+            } | null;
+            /**
+             * Rpd
+             * @description Requests per day one key gets, null when the keys disagree
+             */
+            rpd?: number | null;
+            /**
+             * Rpm
+             * @description Requests per minute one key gets, null when the keys disagree
+             */
+            rpm?: number | null;
+        };
+        /** ProviderProfilesResponse */
+        ProviderProfilesResponse: {
+            /**
+             * Profiles
+             * @default []
+             */
+            profiles: components["schemas"]["ProviderProfile"][];
         };
         /**
          * ProxyChatCompletionRequest
@@ -33959,6 +34413,66 @@ export interface components {
                     [key: string]: unknown;
                 };
             } | null;
+        };
+        /** QuotaWindowUsage */
+        QuotaWindowUsage: {
+            /**
+             * Kind
+             * @description rpm for the minute window, rpd for the day window
+             * @enum {string}
+             */
+            kind: "rpm" | "rpd";
+            /** Limit */
+            limit: number;
+            /** Remaining */
+            remaining: number;
+            /**
+             * Seconds Until Reset
+             * @description When this window starts over, whether or not it is spent
+             */
+            seconds_until_reset: number;
+            /**
+             * Timezone
+             * @description Which day boundary the rpd window counts to. Minute windows are always UTC
+             */
+            timezone: string;
+            /** Used */
+            used: number;
+        };
+        /** RateLimitProbeResponse */
+        RateLimitProbeResponse: {
+            /**
+             * Accepted
+             * @description Requests the provider accepted, which is its per-minute cap when the outcome is rate_limited and a floor under it otherwise
+             */
+            accepted: number;
+            /**
+             * Message
+             * @description What the provider said, with the probed key redacted out
+             */
+            message?: string | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "rate_limited" | "already_limited" | "ceiling_reached" | "deadline_reached" | "refused";
+            /**
+             * Rate Limit Type
+             * @description Which ceiling the provider names, when it names one: requests, tokens or concurrent_requests
+             */
+            rate_limit_type?: string | null;
+            /**
+             * Requests Sent
+             * @description Requests the probe spent in total, including the refused ones
+             */
+            requests_sent: number;
+            /**
+             * Retry After Seconds
+             * @description What the provider's retry-after asked for, which tells a per-minute cap from a per-day one
+             */
+            retry_after_seconds?: number | null;
+            /** Seconds Elapsed */
+            seconds_elapsed: number;
         };
         /** RawRequestTypedDict */
         RawRequestTypedDict: {
@@ -37367,6 +37881,8 @@ export interface components {
             }[] | null;
             /** Cooldown Time */
             cooldown_time?: number | null;
+            /** Enable Quota Routing */
+            enable_quota_routing?: boolean | null;
             /** Enable Tag Filtering */
             enable_tag_filtering?: boolean | null;
             /** Fallbacks */
@@ -37379,11 +37895,8 @@ export interface components {
             model_group_affinity_config?: {
                 [key: string]: string[];
             } | null;
-            /**
-             * Model Group Alias
-             * @default {}
-             */
-            model_group_alias: {
+            /** Model Group Alias */
+            model_group_alias?: {
                 [key: string]: string | {
                     [key: string]: unknown;
                 };
@@ -37394,6 +37907,8 @@ export interface components {
             } | null;
             /** Num Retries */
             num_retries?: number | null;
+            /** Quota Max Wait Seconds */
+            quota_max_wait_seconds?: number | null;
             /** Retry After */
             retry_after?: number | null;
             retry_policy?: components["schemas"]["RetryPolicy"] | null;
@@ -38696,6 +39211,8 @@ export interface components {
             } | null;
             /** Adaptive Router Default Model */
             adaptive_router_default_model?: string | null;
+            /** Additional Drop Params */
+            additional_drop_params?: string[] | null;
             /**
              * Allow Client Keepalive Override
              * @default false
@@ -38970,12 +39487,22 @@ export interface components {
             output_cost_per_video_token?: number | null;
             /** Output Vector Size */
             output_vector_size?: number | null;
+            /** Pinned Params */
+            pinned_params?: {
+                [key: string]: boolean | number | string;
+            } | null;
             /** Quality Router Config */
             quality_router_config?: {
                 [key: string]: unknown;
             } | null;
             /** Quality Router Default Model */
             quality_router_default_model?: string | null;
+            /** Quota Reset Timezone */
+            quota_reset_timezone?: string | null;
+            /** Quota Scope */
+            quota_scope?: ("credential" | "credential_model") | null;
+            /** Quota Scope Id */
+            quota_scope_id?: string | null;
             /** Region Name */
             region_name?: string | null;
             /** Regional Endpoint Uplift Multiplier */
@@ -38984,6 +39511,8 @@ export interface components {
             regional_processing_uplift_multiplier_eu?: number | null;
             /** Regional Processing Uplift Multiplier Us */
             regional_processing_uplift_multiplier_us?: number | null;
+            /** Rpd */
+            rpd?: number | null;
             /** Rpm */
             rpm?: number | null;
             /** S3 Bucket Name */
@@ -50724,6 +51253,26 @@ export interface operations {
             };
         };
     };
+    get_model_quota_usage_model_quota_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelQuotaUsageResponse"];
+                };
+            };
+        };
+    };
     model_settings_model_settings_get: {
         parameters: {
             query?: never;
@@ -54287,6 +54836,124 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderBudgetResponse"];
+                };
+            };
+        };
+    };
+    add_provider_key_provider_keys_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddProviderKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddProviderKeyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_provider_profiles_provider_profiles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProfilesResponse"];
+                };
+            };
+        };
+    };
+    get_observed_rate_limits_provider_rate_limit_observed_get: {
+        parameters: {
+            query?: {
+                /** @description How far back to read refusals */
+                hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservedRateLimitsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    probe_provider_rate_limit_provider_rate_limit_probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProbeRateLimitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimitProbeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

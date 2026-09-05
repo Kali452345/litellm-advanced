@@ -1,4 +1,5 @@
 import userEvent from "@testing-library/user-event";
+import { within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../tests/test-utils";
 import SidebarAccountMenu from "./SidebarAccountMenu";
@@ -19,30 +20,15 @@ let mockUseAuthorizedImpl: () => AuthMock = () => ({
   accessToken: "test-token",
 });
 
-let mockUseDisableShowPromptsImpl = () => false;
-let mockUseDisableBouncingIconImpl = () => false;
 let mockHealthDataImpl = (): { litellm_version?: string } | undefined => ({ litellm_version: "1.99.0" });
 
 let mockGetLocalStorageItemImpl = (key: string): string | null => {
   if (key === "disableShowNewBadge") return null;
-  if (key === "disableShowPrompts") return null;
   return null;
 };
 
 vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
   default: () => mockUseAuthorizedImpl(),
-}));
-
-vi.mock("@/app/(dashboard)/hooks/useDisableShowPrompts", () => ({
-  useDisableShowPrompts: () => mockUseDisableShowPromptsImpl(),
-}));
-
-vi.mock("@/app/(dashboard)/hooks/useDisableBlogPosts", () => ({
-  useDisableBlogPosts: () => false,
-}));
-
-vi.mock("@/app/(dashboard)/hooks/useDisableBouncingIcon", () => ({
-  useDisableBouncingIcon: () => mockUseDisableBouncingIconImpl(),
 }));
 
 vi.mock("@/app/(dashboard)/hooks/healthReadiness/useHealthReadinessDetails", () => ({
@@ -78,12 +64,9 @@ describe("SidebarAccountMenu", () => {
       premiumUser: false,
       accessToken: "test-token",
     });
-    mockUseDisableShowPromptsImpl = () => false;
-    mockUseDisableBouncingIconImpl = () => false;
     mockHealthDataImpl = () => ({ litellm_version: "1.99.0" });
     mockGetLocalStorageItemImpl = (key: string): string | null => {
       if (key === "disableShowNewBadge") return null;
-      if (key === "disableShowPrompts") return null;
       return null;
     };
   });
@@ -160,19 +143,25 @@ describe("SidebarAccountMenu", () => {
     expect(screen.queryByRole("link", { name: /^v/ })).not.toBeInTheDocument();
   });
 
-  it("should show the bouncing icon by default", async () => {
+  it("names the product LiteLLM Advanced and drops the mascot that shipped upstream", async () => {
     const user = userEvent.setup();
     renderWithProviders(<SidebarAccountMenu onLogout={mockOnLogout} />);
     await openMenu(user);
-    expect(screen.getByTitle("Thanks for using LiteLLM!")).toBeInTheDocument();
+
+    const panel = within(screen.getByTestId("sidebar-account-menu-panel"));
+    expect(panel.getByText("LiteLLM")).toBeInTheDocument();
+    expect(panel.getByText("Advanced")).toBeInTheDocument();
+    expect(panel.queryByTitle("Thanks for using LiteLLM!")).not.toBeInTheDocument();
   });
 
-  it("should hide the bouncing icon when Hide Bouncing Icon is enabled", async () => {
+  it("offers one display preference, not a row of switches for chrome that is gone", async () => {
     const user = userEvent.setup();
-    mockUseDisableBouncingIconImpl = () => true;
     renderWithProviders(<SidebarAccountMenu onLogout={mockOnLogout} />);
     await openMenu(user);
-    expect(screen.queryByTitle("Thanks for using LiteLLM!")).not.toBeInTheDocument();
+
+    const panel = within(screen.getByTestId("sidebar-account-menu-panel"));
+    expect(panel.getAllByRole("switch")).toHaveLength(1);
+    expect(panel.getByLabelText("Toggle hide new feature indicators")).toBeInTheDocument();
   });
 
   it("wires the email row to the shared copy button", async () => {
@@ -236,22 +225,6 @@ describe("SidebarAccountMenu", () => {
     const localStorageUtils = vi.mocked(await import("@/utils/localStorageUtils"));
     expect(localStorageUtils.removeLocalStorageItem).toHaveBeenCalledWith("disableShowNewBadge");
     expect(localStorageUtils.emitLocalStorageChange).toHaveBeenCalledWith("disableShowNewBadge");
-  });
-
-  it("should toggle hide all prompts on", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<SidebarAccountMenu onLogout={mockOnLogout} />);
-
-    await openMenu(user);
-
-    const toggle = screen.getByLabelText("Toggle hide all prompts");
-    expect(toggle).not.toBeChecked();
-
-    await user.click(toggle);
-
-    const localStorageUtils = vi.mocked(await import("@/utils/localStorageUtils"));
-    expect(localStorageUtils.setLocalStorageItem).toHaveBeenCalledWith("disableShowPrompts", "true");
-    expect(localStorageUtils.emitLocalStorageChange).toHaveBeenCalledWith("disableShowPrompts");
   });
 
   it("should initialize hide new feature indicators from localStorage", async () => {

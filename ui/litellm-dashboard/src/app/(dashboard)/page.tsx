@@ -1,6 +1,6 @@
 "use client";
 
-import ApiKeysDashboard from "@/app/(dashboard)/api-keys/ApiKeysDashboard";
+import { OverviewView } from "@/app/(dashboard)/overview/_components/OverviewView";
 import LoadingScreen from "@/components/common_components/LoadingScreen";
 import { proxyBaseUrl } from "@/components/networking";
 import { useAuth } from "@/contexts/AuthContext";
@@ -16,7 +16,7 @@ import { MIGRATED_PAGES, migratedHref } from "@/utils/migratedPages";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef } from "react";
 
-function CreateKeyPageContent() {
+function DashboardLandingContent() {
   const { authLoading, token } = useAuth();
 
   const router = useRouter();
@@ -92,13 +92,13 @@ function CreateKeyPageContent() {
     return <LoadingScreen />;
   }
 
-  return <ApiKeysDashboard />;
+  return <OverviewView />;
 }
 
-export default function CreateKeyPage() {
+export default function DashboardLandingPage() {
   return (
     <Suspense fallback={<LoadingScreen />}>
-      <CreateKeyPageContent />
+      <DashboardLandingContent />
     </Suspense>
   );
 }

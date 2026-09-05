@@ -23,6 +23,7 @@ import {
   MODEL_NAME_COLUMN_ID,
   STATUS_COLUMN_ID,
 } from "./ModelsTableColumns";
+import type { AddKeyAction, AddKeyTarget } from "./providerKeyTarget";
 
 export type ModelViewMode = "all" | "current_team";
 
@@ -78,6 +79,8 @@ interface AllModelsTableProps {
   onDeleteClick: (modelId: string) => void;
   onTogglePauseClick: (modelId: string, blocked: boolean) => void | Promise<void>;
   pausingModelId: string | null;
+  resolveAddKeyAction?: (model: ModelData) => AddKeyAction;
+  onAddKey?: (target: AddKeyTarget) => void;
 }
 
 function EmptyState() {
@@ -125,6 +128,8 @@ export function AllModelsTable({
   onDeleteClick,
   onTogglePauseClick,
   pausingModelId,
+  resolveAddKeyAction,
+  onAddKey,
 }: AllModelsTableProps) {
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -137,9 +142,21 @@ export function AllModelsTable({
       onDeleteClick,
       onTogglePauseClick,
       pausingModelId,
+      resolveAddKeyAction,
+      onAddKey,
     };
     return getModelsTableColumns(columnDeps);
-  }, [userRole, userID, onModelIdClick, onTeamIdClick, onDeleteClick, onTogglePauseClick, pausingModelId]);
+  }, [
+    userRole,
+    userID,
+    onModelIdClick,
+    onTeamIdClick,
+    onDeleteClick,
+    onTogglePauseClick,
+    pausingModelId,
+    resolveAddKeyAction,
+    onAddKey,
+  ]);
 
   const modelGroupOptions = useMemo(
     () => [

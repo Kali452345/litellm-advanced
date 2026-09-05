@@ -1,7 +1,9 @@
 """Pin ``PrismaClient`` engine watcher methods.
 
 Symbols pinned here:
-  - ``PrismaClient._get_engine_pid``
+  - ``PrismaClient._get_engine_child``
+  - ``PrismaClient._child_pid``
+  - ``PrismaClient._engine_liveness``
   - ``PrismaClient._is_engine_alive``
   - ``PrismaClient._reap_all_zombies``
   - ``PrismaClient._try_waitpid_watch``
@@ -14,58 +16,117 @@ Symbols pinned here:
   - ``PrismaClient._start_engine_watcher``
   - ``PrismaClient._stop_engine_watcher``
 
-Linux-only tests are skipped on Windows; the production code uses
-``waitpid``/``pidfd_open`` which are Unix-only.
+Tests of ``waitpid``, ``pidfd_open`` and POSIX signal semantics are marked
+``unix_only``; everything else runs on Windows too, which is the platform the
+process-polling fallback exists for.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import threading
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from litellm.litellm_core_utils.process_liveness import Liveness
 from litellm.proxy.utils import PrismaClient
 
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="engine watcher is Unix-only"
+unix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="waitpid, pidfd and signal 0 are Unix-only"
 )
 
 
-def test_get_engine_pid_extracts_process_pid(prisma_client: PrismaClient) -> None:
-    fake_engine = MagicMock()
-    fake_engine.process = MagicMock()
-    fake_engine.process.pid = 4242
-    prisma_client.db._original_prisma = MagicMock()
-    prisma_client.db._original_prisma.is_connected = MagicMock(return_value=True)
-    prisma_client.db._original_prisma._engine = fake_engine
+@dataclass(frozen=True, slots=True)
+class FakeChild:
+    """A stand-in for the engine's ``Popen``.
+
+    Cannot be a ``MagicMock``: since 3.12 ``isinstance`` against a runtime
+    protocol uses ``inspect.getattr_static``, which does not see lazily
+    created mock attributes.
+    """
+
+    pid: int
+    exit_code: int | None = None
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+
+def _connected_engine_with(process: object) -> MagicMock:
+    engine = MagicMock()
+    engine.process = process
+    prisma = MagicMock()
+    prisma.is_connected = MagicMock(return_value=True)
+    prisma._engine = engine
+    return prisma
+
+
+def test_get_engine_child_returns_the_engine_process(
+    prisma_client: PrismaClient,
+) -> None:
+    child = FakeChild(pid=4242)
+    prisma_client.db._original_prisma = _connected_engine_with(child)
     actual = {
-        "pid": prisma_client._get_engine_pid(),
-        "engine_attr": prisma_client.db._original_prisma._engine is fake_engine,
-        "process_pid": fake_engine.process.pid,
+        "child": prisma_client._get_engine_child(),
+        "pid": PrismaClient._child_pid(prisma_client._get_engine_child()),
     }
-    assert actual == {"pid": 4242, "engine_attr": True, "process_pid": 4242}
+    assert actual == {"child": child, "pid": 4242}
 
 
-def test_get_engine_pid_returns_zero_when_engine_attr_missing(
+def test_get_engine_child_is_none_when_process_cannot_be_polled(
+    prisma_client: PrismaClient,
+) -> None:
+    """A liveness answer needs ``poll()``; anything without it is not a child
+    we can watch, and claiming otherwise would report a dead engine as alive."""
+    prisma_client.db._original_prisma = _connected_engine_with(object())
+    actual = {
+        "child": prisma_client._get_engine_child(),
+        "pid": PrismaClient._child_pid(prisma_client._get_engine_child()),
+    }
+    assert actual == {"child": None, "pid": 0}
+
+
+def test_get_engine_child_is_none_when_engine_attr_missing(
     prisma_client: PrismaClient,
 ) -> None:
     prisma_client.db._original_prisma = MagicMock(spec=[])
-    assert prisma_client._get_engine_pid() == 0
+    assert prisma_client._get_engine_child() is None
 
 
-def test_get_engine_pid_returns_zero_when_client_disconnected(
+def test_get_engine_child_is_none_when_client_disconnected(
     prisma_client: PrismaClient, disconnected_prisma
 ) -> None:
     """The reconnect path calls this on an arbitrarily-broken client; it must
     report "no engine" instead of re-raising ClientNotConnectedError."""
     prisma_client.db._original_prisma = disconnected_prisma
-    assert prisma_client._get_engine_pid() == 0
+    assert prisma_client._get_engine_child() is None
+
+
+def test_engine_liveness_reads_the_tracked_child_without_signalling(
+    prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Signal 0 is ``CTRL_C_EVENT`` on Windows, so a watched child must be
+    answered by its own process object and never by a signal."""
+    kill = MagicMock()
+    monkeypatch.setattr("os.kill", kill)
+    prisma_client._engine_pid = 4242
+    prisma_client._engine_child = FakeChild(pid=4242)
+    alive = prisma_client._engine_liveness()
+    prisma_client._engine_child = FakeChild(pid=4242, exit_code=0)
+    dead = prisma_client._engine_liveness()
+    assert (alive, dead, kill.call_count) == (Liveness.ALIVE, Liveness.DEAD, 0)
+
+
+def test_is_engine_alive_false_when_tracked_child_exited(
+    prisma_client: PrismaClient,
+) -> None:
+    prisma_client._engine_pid = 4242
+    prisma_client._engine_child = FakeChild(pid=4242, exit_code=0)
+    assert prisma_client._is_engine_alive() is False
 
 
 def test_is_engine_alive_true_when_pid_zero(prisma_client: PrismaClient) -> None:
@@ -78,6 +139,7 @@ def test_is_engine_alive_true_when_pid_zero(prisma_client: PrismaClient) -> None
     assert pinned == {"result": True, "pid": 0, "type": "bool"}
 
 
+@unix_only
 def test_is_engine_alive_false_when_process_lookup_fails(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -88,6 +150,7 @@ def test_is_engine_alive_false_when_process_lookup_fails(
     assert prisma_client._is_engine_alive() is False
 
 
+@unix_only
 def test_is_engine_alive_true_on_permission_error(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -96,6 +159,7 @@ def test_is_engine_alive_true_on_permission_error(
     assert prisma_client._is_engine_alive() is True
 
 
+@unix_only
 def test_reap_all_zombies_returns_set_of_reaped_pids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -124,6 +188,7 @@ def test_reap_all_zombies_handles_no_children_error(
     assert PrismaClient._reap_all_zombies() == set()
 
 
+@unix_only
 @pytest.mark.asyncio
 async def test_try_waitpid_watch_starts_thread_for_live_child(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
@@ -169,6 +234,7 @@ async def test_try_waitpid_watch_returns_false_for_non_child(
     assert prisma_client._try_waitpid_watch(123) is False
 
 
+@unix_only
 @pytest.mark.asyncio
 async def test_try_waitpid_watch_handles_already_dead_pid(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
@@ -384,6 +450,66 @@ async def test_on_pidfd_readable_noop_when_already_dead_closes_pidfd(
 
 
 @pytest.mark.asyncio
+async def test_poll_engine_proc_detects_death_through_the_tracked_child(
+    prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Windows path: the poll loop must notice the exit from the child's own
+    process object, with no signal sent to the PID."""
+    kill = MagicMock()
+    monkeypatch.setattr("os.kill", kill)
+    prisma_client._engine_pid = 555
+    prisma_client._engine_child = FakeChild(pid=555, exit_code=1)
+    prisma_client._watching_engine = True
+    prisma_client.attempt_db_reconnect = AsyncMock()
+    monkeypatch.setattr(PrismaClient, "_reap_all_zombies", staticmethod(lambda: set()))
+    prisma_client._cleanup_engine_watcher = MagicMock()
+
+    await prisma_client._poll_engine_proc()
+    pinned = {
+        "reconnect_count": prisma_client.attempt_db_reconnect.await_count,
+        "confirmed_dead": prisma_client._engine_confirmed_dead,
+        "reason": prisma_client.attempt_db_reconnect.await_args.kwargs["reason"],
+        "signals_sent": kill.call_count,
+    }
+    assert pinned == {
+        "reconnect_count": 1,
+        "confirmed_dead": True,
+        "reason": "engine_process_death",
+        "signals_sent": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_poll_engine_proc_keeps_watching_a_live_child(
+    prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running engine must not be reported dead: the loop sleeps instead, and
+    stops only because the watcher was torn down."""
+    prisma_client._engine_pid = 555
+    prisma_client._engine_child = FakeChild(pid=555)
+    prisma_client._watching_engine = True
+    prisma_client.attempt_db_reconnect = AsyncMock()
+
+    async def stop_watching(_seconds: float) -> None:
+        prisma_client._watching_engine = False
+
+    monkeypatch.setattr(asyncio, "sleep", stop_watching)
+
+    await prisma_client._poll_engine_proc()
+    pinned = {
+        "reconnect_count": prisma_client.attempt_db_reconnect.await_count,
+        "confirmed_dead": prisma_client._engine_confirmed_dead,
+        "watched_pid": prisma_client._engine_pid,
+    }
+    assert pinned == {
+        "reconnect_count": 0,
+        "confirmed_dead": False,
+        "watched_pid": 555,
+    }
+
+
+@unix_only
+@pytest.mark.asyncio
 async def test_poll_engine_proc_detects_death_and_reconnects(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -410,15 +536,45 @@ async def test_poll_engine_proc_detects_death_and_reconnects(
 
 
 @pytest.mark.asyncio
-async def test_poll_engine_proc_returns_on_permission_error(
+async def test_poll_engine_proc_stops_when_liveness_is_unknowable(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Nothing can be watched through a PID we cannot ask about, so the loop
+    gives up rather than spinning on an answer it will never get."""
+    prisma_client._engine_pid = 555
+    prisma_client._watching_engine = True
+    monkeypatch.setattr(
+        "os.kill", MagicMock(side_effect=OSError(87, "The parameter is incorrect"))
+    )
+    prisma_client._cleanup_engine_watcher = MagicMock()
+    await prisma_client._poll_engine_proc()
+    assert prisma_client._cleanup_engine_watcher.call_count == 1
+
+
+@unix_only
+@pytest.mark.asyncio
+async def test_poll_engine_proc_treats_permission_error_as_alive(
+    prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EPERM says the process is there, just not ours to signal, so the watcher
+    keeps watching instead of switching itself off."""
     prisma_client._engine_pid = 555
     prisma_client._watching_engine = True
     monkeypatch.setattr("os.kill", MagicMock(side_effect=PermissionError()))
     prisma_client._cleanup_engine_watcher = MagicMock()
+    slept: list[float] = []
+
+    async def stop_watching(seconds: float) -> None:
+        slept.append(seconds)
+        prisma_client._watching_engine = False
+
+    monkeypatch.setattr(asyncio, "sleep", stop_watching)
     await prisma_client._poll_engine_proc()
-    assert prisma_client._cleanup_engine_watcher.call_count == 1
+    pinned = {
+        "slept": slept,
+        "cleanup_count": prisma_client._cleanup_engine_watcher.call_count,
+    }
+    assert pinned == {"slept": [1], "cleanup_count": 0}
 
 
 @pytest.mark.asyncio
@@ -433,6 +589,7 @@ async def test_cleanup_engine_watcher_resets_state(
 
     prisma_client._engine_pidfd = 42
     prisma_client._engine_pid = 999
+    prisma_client._engine_child = FakeChild(pid=999)
     prisma_client._engine_wait_thread = MagicMock()
     prisma_client._watching_engine = True
 
@@ -440,6 +597,7 @@ async def test_cleanup_engine_watcher_resets_state(
     pinned = {
         "engine_pidfd": prisma_client._engine_pidfd,
         "engine_pid": prisma_client._engine_pid,
+        "engine_child": prisma_client._engine_child,
         "wait_thread": prisma_client._engine_wait_thread,
         "watching": prisma_client._watching_engine,
         "closed": closed,
@@ -448,6 +606,7 @@ async def test_cleanup_engine_watcher_resets_state(
     assert pinned == {
         "engine_pidfd": -1,
         "engine_pid": 0,
+        "engine_child": None,
         "wait_thread": None,
         "watching": False,
         "closed": [42],
@@ -471,19 +630,22 @@ async def test_cleanup_engine_watcher_swallows_close_error(
 async def test_start_engine_watcher_picks_waitpid_when_available(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(prisma_client, "_get_engine_pid", MagicMock(return_value=12345))
+    child = FakeChild(pid=12345)
+    monkeypatch.setattr(prisma_client, "_get_engine_child", MagicMock(return_value=child))
     monkeypatch.setattr(prisma_client, "_try_waitpid_watch", MagicMock(return_value=True))
     pidfd_called = MagicMock(return_value=False)
     monkeypatch.setattr(prisma_client, "_try_pidfd_watch", pidfd_called)
     await prisma_client._start_engine_watcher()
     pinned = {
         "engine_pid": prisma_client._engine_pid,
+        "engine_child": prisma_client._engine_child,
         "confirmed_dead_reset": prisma_client._engine_confirmed_dead,
         "waitpid_called": prisma_client._try_waitpid_watch.call_count,
         "pidfd_skipped": pidfd_called.call_count,
     }
     assert pinned == {
         "engine_pid": 12345,
+        "engine_child": child,
         "confirmed_dead_reset": False,
         "waitpid_called": 1,
         "pidfd_skipped": 0,
@@ -494,7 +656,7 @@ async def test_start_engine_watcher_picks_waitpid_when_available(
 async def test_start_engine_watcher_returns_early_when_pid_unknown(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(prisma_client, "_get_engine_pid", MagicMock(return_value=0))
+    monkeypatch.setattr(prisma_client, "_get_engine_child", MagicMock(return_value=None))
     monkeypatch.setattr(prisma_client, "_try_waitpid_watch", MagicMock())
     await prisma_client._start_engine_watcher()
     assert prisma_client._try_waitpid_watch.call_count == 0
@@ -504,13 +666,18 @@ async def test_start_engine_watcher_returns_early_when_pid_unknown(
 async def test_start_engine_watcher_falls_back_to_polling_when_no_kernel_apis(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(prisma_client, "_get_engine_pid", MagicMock(return_value=4242))
+    child = FakeChild(pid=4242)
+    monkeypatch.setattr(prisma_client, "_get_engine_child", MagicMock(return_value=child))
     monkeypatch.setattr(prisma_client, "_try_waitpid_watch", MagicMock(return_value=False))
     monkeypatch.setattr(prisma_client, "_try_pidfd_watch", MagicMock(return_value=False))
     monkeypatch.setattr(prisma_client, "_poll_engine_proc", AsyncMock())
     await prisma_client._start_engine_watcher()
     await asyncio.sleep(0)
-    assert prisma_client._watching_engine is True
+    pinned = {
+        "watching": prisma_client._watching_engine,
+        "engine_child": prisma_client._engine_child,
+    }
+    assert pinned == {"watching": True, "engine_child": child}
 
 
 def test_stop_engine_watcher_clears_dead_flag(
@@ -621,6 +788,7 @@ async def test_on_pidfd_readable_planned_death_cleans_up_without_reconnect(
     }
 
 
+@unix_only
 @pytest.mark.asyncio
 async def test_try_waitpid_watch_already_dead_planned_skips_reconnect(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
@@ -691,24 +859,26 @@ async def test_start_db_health_watchdog_task_wires_engine_replaced_hook(
 async def test_poll_engine_proc_planned_death_skips_reconnect(
     prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The os.kill polling fallback must also honor planned deaths."""
+    """The polling fallback must also honor planned deaths."""
     prisma_client._engine_pid = 555
+    prisma_client._engine_child = FakeChild(pid=555, exit_code=0)
     prisma_client._watching_engine = True
     prisma_client._engine_confirmed_dead = False
     prisma_client.db._expected_engine_deaths = {555}
     prisma_client.attempt_db_reconnect = AsyncMock(return_value=True)
     monkeypatch.setattr(PrismaClient, "_reap_all_zombies", staticmethod(lambda: set()))
     monkeypatch.setattr(prisma_client, "_cleanup_engine_watcher", MagicMock())
-    monkeypatch.setattr("os.kill", MagicMock(side_effect=ProcessLookupError()))
 
     await prisma_client._poll_engine_proc()
     pinned = {
         "reconnect_called": prisma_client.attempt_db_reconnect.await_count,
         "cleanup_called": prisma_client._cleanup_engine_watcher.call_count,
         "confirmed_dead": prisma_client._engine_confirmed_dead,
+        "planned_pid_consumed": 555 not in prisma_client.db._expected_engine_deaths,
     }
     assert pinned == {
         "reconnect_called": 0,
         "cleanup_called": 1,
         "confirmed_dead": False,
+        "planned_pid_consumed": True,
     }

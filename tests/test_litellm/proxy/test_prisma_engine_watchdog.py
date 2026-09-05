@@ -3,8 +3,8 @@ Tests for PrismaClient engine watchdog: death detection and automatic reconnect.
 
 Covers:
 - Engine PID discovery and liveness check
-- Engine process gone (os.kill raises ProcessLookupError) → reconnect triggered
-- PermissionError from os.kill → treated as alive (process exists but not ours)
+- Engine process gone (the tracked child exited, or signal 0 raises ProcessLookupError) -> reconnect triggered
+- PermissionError from os.kill -> treated as alive (process exists but not ours)
 - pidfd handler → schedules attempt_db_reconnect even when lock is held
 - waitpid thread → instant cross-platform detection, triggers reconnect
 - _run_reconnect_cycle branches: heavy path (engine dead) vs lightweight path (engine alive)
@@ -16,13 +16,26 @@ Covers:
 
 import asyncio
 import os
-import threading
-import time
+import sys
+from dataclasses import dataclass
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from litellm.proxy.utils import PrismaClient, ProxyLogging
+
+unix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="waitpid and signal 0 are Unix-only"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FakeChild:
+    pid: int
+    exit_code: int | None = None
+
+    def poll(self) -> int | None:
+        return self.exit_code
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +83,19 @@ def test_is_engine_alive_returns_true_when_pid_unknown(engine_client):
     assert engine_client._is_engine_alive() is True
 
 
+def test_is_engine_alive_returns_false_when_tracked_child_exited(engine_client):
+    """The engine is our own child, so its exit is visible without probing a PID.
+
+    The tracked PID is this very process, which every PID probe calls alive, so a
+    False here can only have come from the child's own exit code.
+    """
+    engine_client._engine_pid = os.getpid()
+    engine_client._engine_child = FakeChild(pid=os.getpid(), exit_code=0)
+
+    assert engine_client._is_engine_alive() is False
+
+
+@unix_only
 def test_is_engine_alive_returns_false_when_process_gone(engine_client):
     """_is_engine_alive returns False when os.kill raises ProcessLookupError."""
     engine_client._engine_pid = 9999
@@ -77,6 +103,7 @@ def test_is_engine_alive_returns_false_when_process_gone(engine_client):
         assert engine_client._is_engine_alive() is False
 
 
+@unix_only
 def test_is_engine_alive_returns_true_on_permission_error(engine_client):
     """_is_engine_alive returns True when os.kill raises PermissionError (process exists but not ours)."""
     engine_client._engine_pid = 1234
@@ -84,6 +111,7 @@ def test_is_engine_alive_returns_true_on_permission_error(engine_client):
         assert engine_client._is_engine_alive() is True
 
 
+@unix_only
 def test_is_engine_alive_returns_true_for_running_process(engine_client):
     """_is_engine_alive returns True when os.kill succeeds (process running)."""
     engine_client._engine_pid = 1234
@@ -96,6 +124,23 @@ def test_is_engine_alive_returns_true_for_running_process(engine_client):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_poll_dead_child_triggers_reconnect(engine_client) -> None:
+    """The polling loop reconnects when the tracked engine process has exited."""
+    engine_client._engine_pid = 1234
+    engine_client._engine_child = FakeChild(pid=1234, exit_code=1)
+    engine_client._watching_engine = True
+    engine_client.attempt_db_reconnect = AsyncMock(return_value=True)
+
+    await engine_client._poll_engine_proc()
+
+    engine_client.attempt_db_reconnect.assert_awaited_once_with(
+        reason="engine_process_death",
+        force=True,
+    )
+
+
+@unix_only
 @pytest.mark.asyncio
 async def test_poll_missing_process_triggers_reconnect(engine_client) -> None:
     """Polling loop triggers attempt_db_reconnect when os.kill raises ProcessLookupError."""
@@ -113,16 +158,16 @@ async def test_poll_missing_process_triggers_reconnect(engine_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_poll_permission_error_stops_polling(engine_client) -> None:
-    """Polling loop stops cleanly when os.kill raises PermissionError (process not ours)."""
+async def test_poll_unknowable_liveness_stops_polling(engine_client) -> None:
+    """With no child to poll and no usable answer for the PID, the loop stops
+    instead of spinning: on Windows a PID alone can never answer this."""
     engine_client._engine_pid = 1234
-    engine_client._watching_engine = True
     engine_client.attempt_db_reconnect = AsyncMock(return_value=True)
+    engine_client._watching_engine = True
 
-    with patch("os.kill", side_effect=PermissionError):
+    with patch("os.kill", side_effect=OSError(87, "The parameter is incorrect")):
         await engine_client._poll_engine_proc()
 
-    # PermissionError means process exists but isn't ours — no reconnect, just stop polling
     engine_client.attempt_db_reconnect.assert_not_awaited()
     assert engine_client._watching_engine is False
     assert engine_client._engine_pid == 0
@@ -132,15 +177,13 @@ async def test_poll_permission_error_stops_polling(engine_client) -> None:
 async def test_stop_loop_halts_polling(engine_client) -> None:
     """Polling loop exits cleanly when _stop_engine_watcher is called."""
     engine_client._engine_pid = 1234
+    engine_client._engine_child = FakeChild(pid=1234)
     engine_client._watching_engine = True
 
     async def stop_during_sleep(_duration: float) -> None:
         engine_client._stop_engine_watcher()
 
-    with (
-        patch("os.kill"),
-        patch("asyncio.sleep", side_effect=stop_during_sleep),
-    ):
+    with patch("asyncio.sleep", side_effect=stop_during_sleep):
         await engine_client._poll_engine_proc()
 
     assert engine_client._watching_engine is False
@@ -367,7 +410,7 @@ async def test_stop_watchdog_task_also_stops_engine_watcher(
 
 
 # ---------------------------------------------------------------------------
-# waitpid thread (Unix only; Windows falls back to os.kill polling)
+# waitpid thread (Unix only; Windows falls back to polling the engine's process)
 # ---------------------------------------------------------------------------
 
 
@@ -394,6 +437,7 @@ def test_try_waitpid_watch_returns_false_when_not_child(engine_client):
     assert engine_client._engine_wait_thread is None
 
 
+@unix_only
 def test_try_waitpid_watch_starts_thread_for_child(engine_client):
     """_try_waitpid_watch starts a daemon thread when PID is our child."""
     engine_client._engine_pid = 1234
@@ -402,7 +446,7 @@ def test_try_waitpid_watch_starts_thread_for_child(engine_client):
     with (
         patch("os.waitpid", return_value=(0, 0)),
         patch("asyncio.get_running_loop", return_value=mock_loop),
-        patch("threading.Thread", return_value=mock_thread) as mock_thread_cls,
+        patch("threading.Thread", return_value=mock_thread),
     ):
         result = engine_client._try_waitpid_watch(1234)
     assert result is True
@@ -410,6 +454,7 @@ def test_try_waitpid_watch_starts_thread_for_child(engine_client):
     assert engine_client._engine_wait_thread is mock_thread
 
 
+@unix_only
 @pytest.mark.asyncio
 async def test_try_waitpid_watch_handles_already_dead_engine(engine_client) -> None:
     """_try_waitpid_watch detects engine already dead at watch start."""

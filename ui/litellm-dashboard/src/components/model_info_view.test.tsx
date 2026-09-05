@@ -638,6 +638,132 @@ describe("ModelInfoView", () => {
     expect(updatePayload.litellm_params).not.toHaveProperty("vector_store_ids");
   });
 
+  describe("temperature override", () => {
+    const withStoredParams = (litellmParams: Record<string, unknown>) => {
+      const modelData = {
+        ...defaultModelData,
+        litellm_params: { ...defaultModelData.litellm_params, ...litellmParams },
+      };
+      mockUseModelsInfo.mockReturnValue({ data: { data: [modelData] }, isLoading: false, error: null });
+      mockModelInfoV1Call.mockResolvedValue({ data: [modelData] });
+      return render(<ModelInfoView {...DEFAULT_ADMIN_PROPS} />, { wrapper });
+    };
+
+    const startEditing = async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(await screen.findByRole("button", { name: /edit settings/i }));
+      return screen.findByRole("button", { name: /save changes/i });
+    };
+
+    const savedLitellmParams = async (user: ReturnType<typeof userEvent.setup>, save: HTMLElement) => {
+      await user.click(save);
+      await waitFor(() => {
+        expect(mockModelPatchUpdateCall).toHaveBeenCalled();
+      });
+      return mockModelPatchUpdateCall.mock.calls[0][1].litellm_params;
+    };
+
+    it("saves the drop so a provider that rejects the param never receives it", async () => {
+      const user = userEvent.setup();
+      withStoredParams({});
+      const save = await startEditing(user);
+
+      await user.click(screen.getByRole("radio", { name: /^Never send it/ }));
+
+      expect(await savedLitellmParams(user, save)).toMatchObject({ additional_drop_params: ["temperature"] });
+    });
+
+    it("saves the operator's own value, which then replaces whatever the agent sent", async () => {
+      const user = userEvent.setup();
+      withStoredParams({});
+      const save = await startEditing(user);
+
+      await user.click(screen.getByRole("radio", { name: /^Always send this value/ }));
+      fireEvent.change(screen.getByLabelText(/Temperature To Send Instead/i), { target: { value: "0.3" } });
+
+      expect(await savedLitellmParams(user, save)).toMatchObject({ pinned_params: { temperature: 0.3 } });
+    });
+
+    it("shows a stored pin, so an operator can see what the deployment already sends", async () => {
+      const user = userEvent.setup();
+      withStoredParams({ pinned_params: { temperature: 0.3 } });
+      await startEditing(user);
+
+      expect(screen.getByRole("radio", { name: /^Always send this value/ })).toBeChecked();
+      expect(screen.getByLabelText(/Temperature To Send Instead/i)).toHaveValue("0.3");
+    });
+
+    it("hides the value input until there is a value to send", async () => {
+      const user = userEvent.setup();
+      withStoredParams({});
+      await startEditing(user);
+
+      expect(screen.queryByLabelText(/Temperature To Send Instead/i)).not.toBeInTheDocument();
+    });
+
+    it("unsets a stored pin with an explicit null, since a dropped key would leave it in place", async () => {
+      const user = userEvent.setup();
+      withStoredParams({ pinned_params: { temperature: 0.3 } });
+      const save = await startEditing(user);
+
+      await user.click(screen.getByRole("radio", { name: /^Send what the caller asked for/ }));
+
+      const saved = await savedLitellmParams(user, save);
+      expect(saved.pinned_params).toBeNull();
+      expect("additional_drop_params" in saved).toBe(false);
+    });
+
+    it("swaps a stored drop for a pin without leaving both on", async () => {
+      const user = userEvent.setup();
+      withStoredParams({ additional_drop_params: ["temperature"] });
+      const save = await startEditing(user);
+
+      await user.click(screen.getByRole("radio", { name: /^Always send this value/ }));
+      fireEvent.change(screen.getByLabelText(/Temperature To Send Instead/i), { target: { value: "1" } });
+
+      expect(await savedLitellmParams(user, save)).toMatchObject({
+        pinned_params: { temperature: 1 },
+        additional_drop_params: null,
+      });
+    });
+
+    it("keeps a stored pin through an edit that never touched it", async () => {
+      const user = userEvent.setup();
+      withStoredParams({ pinned_params: { temperature: 0.3 } });
+      const save = await startEditing(user);
+
+      expect(await savedLitellmParams(user, save)).toMatchObject({ pinned_params: { temperature: 0.3 } });
+    });
+
+    it("refuses a value no provider accepts rather than saving it", async () => {
+      const user = userEvent.setup();
+      withStoredParams({});
+      const save = await startEditing(user);
+
+      await user.click(screen.getByRole("radio", { name: /^Always send this value/ }));
+      fireEvent.change(screen.getByLabelText(/Temperature To Send Instead/i), { target: { value: "7" } });
+      await user.click(save);
+
+      expect(await screen.findByText("Enter a temperature between 0 and 2")).toBeInTheDocument();
+      expect(mockModelPatchUpdateCall).not.toHaveBeenCalled();
+    });
+
+    it("says what the deployment does with the caller's value before any edit", async () => {
+      withStoredParams({ pinned_params: { temperature: 0.3 } });
+
+      expect(await screen.findByText("Always send 0.3")).toBeInTheDocument();
+    });
+
+    it("sends no override at all when a save never involved one", async () => {
+      const user = userEvent.setup();
+      withStoredParams({});
+      const save = await startEditing(user);
+
+      const saved = await savedLitellmParams(user, save);
+      expect("pinned_params" in saved).toBe(false);
+      expect("additional_drop_params" in saved).toBe(false);
+    });
+  });
+
   describe("PTU cost attribution gate", () => {
     const ptuModelData = {
       ...defaultModelData,

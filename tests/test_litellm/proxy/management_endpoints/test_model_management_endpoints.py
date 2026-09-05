@@ -908,7 +908,7 @@ class TestUpdateModel:
             ),
             patch(
                 "litellm.proxy.management_endpoints.model_management_endpoints.encrypt_value_helper",
-                side_effect=lambda value: value,
+                side_effect=lambda value, **kwargs: value,
             ),
             patch(
                 "litellm.proxy.management_endpoints.model_management_endpoints.clear_cache",
@@ -4528,3 +4528,272 @@ class TestBlockModelResponseSerialization:
         assert body["model_id"] == "m-block-1"
         assert body["blocked"] is blocked
         assert body["litellm_params"] == {"model": "openai/gpt-4o-mini", "api_key": "encrypted-value"}
+
+
+class TestStoredParamsThatCannotBeEncrypted:
+    """A param typed as a closed set of strings cannot be stored as ciphertext: the row
+    stops validating into a `Deployment`, and that validation is every read the model
+    management endpoints do. `quota_scope` is one, so a key metered per account could
+    not be edited or deleted once written.
+    """
+
+    _MODEL_ID = "m-quota-1"
+    _API_KEY = "AIza-the-real-key"
+
+    @pytest.fixture(autouse=True)
+    def _salt_key(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_SALT_KEY", "sk-salt-for-this-test")
+
+    def _stored_row(self, **overrides) -> LiteLLM_ProxyModelTable:
+        from litellm.proxy.management_endpoints.model_management_endpoints import (
+            _encrypted_for_storage,
+        )
+
+        return LiteLLM_ProxyModelTable(
+            model_id=self._MODEL_ID,
+            model_name="flash",
+            litellm_params=_encrypted_for_storage(
+                {
+                    "model": "gemini/gemini-2.5-flash",
+                    "api_key": self._API_KEY,
+                    "quota_scope": "credential",
+                    "rpm": 5,
+                    **overrides,
+                }
+            ),
+            model_info={"id": self._MODEL_ID},
+            created_by="admin",
+            updated_by="admin",
+        )
+
+    @staticmethod
+    def _client_holding(row: LiteLLM_ProxyModelTable) -> MagicMock:
+        client = MagicMock()
+        client.db.litellm_proxymodeltable.find_unique = AsyncMock(return_value=row)
+        client.db.litellm_proxymodeltable.delete = AsyncMock(return_value=row)
+        return client
+
+    def test_the_key_is_stored_encrypted_and_the_metering_mode_is_not(self):
+        from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_value_helper
+
+        stored = self._stored_row().litellm_params
+
+        assert stored["api_key"] != self._API_KEY
+        assert decrypt_value_helper(value=stored["api_key"], key="api_key") == self._API_KEY
+        assert stored["quota_scope"] == "credential"
+        assert stored["rpm"] == 5
+
+    @pytest.mark.asyncio
+    async def test_a_model_metered_per_account_can_be_read_back(self):
+        from litellm.proxy.management_endpoints.model_management_endpoints import get_db_model
+
+        row = self._stored_row()
+
+        deployment = await get_db_model(model_id=self._MODEL_ID, prisma_client=self._client_holding(row))
+
+        assert deployment is not None
+        assert deployment.litellm_params.quota_scope == "credential"
+        assert deployment.litellm_params.api_key == row.litellm_params["api_key"]
+
+    @pytest.mark.asyncio
+    async def test_a_row_written_while_the_mode_was_still_encrypted_is_read_back(self):
+        """Rows already in the db carry ciphertext there, and they have to stay editable."""
+        from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
+        from litellm.proxy.management_endpoints.model_management_endpoints import get_db_model
+
+        row = self._stored_row(quota_scope=encrypt_value_helper(value="credential_model"))
+
+        deployment = await get_db_model(model_id=self._MODEL_ID, prisma_client=self._client_holding(row))
+
+        assert deployment is not None
+        assert deployment.litellm_params.quota_scope == "credential_model"
+
+    @pytest.mark.asyncio
+    async def test_patching_a_model_writes_the_stored_key_back_untouched(self):
+        """Nothing but the closed-set params may be decrypted on read: `update_db_model`
+        merges the patch onto this object and writes the result straight back, so a
+        blanket decrypt here would store the provider key in plaintext.
+        """
+        from litellm.proxy.management_endpoints.model_management_endpoints import (
+            get_db_model,
+            update_db_model,
+        )
+        from litellm.types.router import updateLiteLLMParams
+
+        row = self._stored_row()
+        db_model = await get_db_model(model_id=self._MODEL_ID, prisma_client=self._client_holding(row))
+        assert db_model is not None
+
+        payload = update_db_model(
+            db_model=db_model, updated_patch=updateDeployment(litellm_params=updateLiteLLMParams(rpm=8))
+        )
+        written = json.loads(payload["litellm_params"])
+
+        assert written["api_key"] == row.litellm_params["api_key"]
+        assert written["quota_scope"] == "credential"
+        assert written["rpm"] == 8
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_model_metered_per_account_succeeds(self):
+        from litellm.proxy.management_endpoints.model_management_endpoints import ModelInfoDelete
+        from litellm.proxy.management_endpoints.model_management_endpoints import (
+            delete_model as delete_model_endpoint,
+        )
+
+        mock_prisma = self._client_holding(self._stored_row())
+        _PS = "litellm.proxy.proxy_server"
+        with (
+            patch(f"{_PS}.prisma_client", mock_prisma),
+            patch(f"{_PS}.store_model_in_db", True),
+            patch(f"{_PS}.proxy_config", MagicMock()),
+            patch(f"{_PS}.proxy_logging_obj", MagicMock()),
+            patch(f"{_PS}.general_settings", {}),
+            patch(f"{_PS}.premium_user", True),
+            patch(f"{_PS}.llm_router", None),
+        ):
+            result = await delete_model_endpoint(
+                model_info=ModelInfoDelete(id=self._MODEL_ID),
+                user_api_key_dict=UserAPIKeyAuth(user_id="admin", user_role=LitellmUserRoles.PROXY_ADMIN),
+            )
+
+        assert "deleted successfully" in result["message"]
+        mock_prisma.db.litellm_proxymodeltable.delete.assert_awaited_once_with(where={"model_id": self._MODEL_ID})
+
+
+def _pooled_key() -> Deployment:
+    """One key of a rotating pool, metered on a scope it shares with a sibling key."""
+    from litellm.types.router import ModelInfo
+
+    return Deployment(
+        model_name="flash-pool",
+        litellm_params=LiteLLM_Params(
+            model="openai/qwen-flash",
+            api_key="sk-provider-key",
+            rpm=5,
+            rpd=100,
+            quota_scope_id="one-shared-account",
+            quota_reset_timezone="America/Los_Angeles",
+        ),
+        model_info=ModelInfo(id="dep-quota-0"),
+    )
+
+
+def _patched_params(**fields: object) -> updateDeployment:
+    from litellm.types.router import updateLiteLLMParams
+
+    return updateDeployment(litellm_params=updateLiteLLMParams(**fields))
+
+
+def _params_after(patch: updateDeployment) -> dict[str, object]:
+    from litellm.proxy.management_endpoints.model_management_endpoints import update_db_model
+
+    return json.loads(update_db_model(db_model=_pooled_key(), updated_patch=patch)["litellm_params"])
+
+
+class TestUpdateDBModelClearQuotaParams:
+    """A quota knob an operator set once has to be removable, or two credentials
+    stay welded to one counter with no way back short of deleting the model."""
+
+    @pytest.mark.parametrize(
+        ("field", "stored"),
+        [
+            ("quota_scope_id", "one-shared-account"),
+            ("rpd", 100),
+            ("quota_reset_timezone", "America/Los_Angeles"),
+        ],
+    )
+    def test_an_explicit_null_unsets_the_quota_param(self, field: str, stored: object):
+        assert _pooled_key().litellm_params.model_dump()[field] == stored
+
+        assert field not in _params_after(_patched_params(**{field: None}))
+
+    def test_unsetting_one_quota_param_leaves_the_others_alone(self):
+        params = _params_after(_patched_params(quota_scope_id=None))
+
+        assert params["rpd"] == 100
+        assert params["quota_reset_timezone"] == "America/Los_Angeles"
+        assert params["rpm"] == 5
+
+    def test_a_quota_param_left_out_of_the_patch_keeps_its_stored_value(self):
+        params = _params_after(_patched_params(rpm=8))
+
+        assert params["quota_scope_id"] == "one-shared-account"
+        assert params["rpd"] == 100
+        assert params["rpm"] == 8
+
+    def test_a_quota_clear_does_not_take_the_api_key_with_it(self):
+        """The key is what makes the deployment work, and no quota edit may drop it."""
+        params = _params_after(_patched_params(quota_scope_id=None))
+
+        assert params["api_key"] == "sk-provider-key"
+
+    def test_a_null_that_is_not_a_clearable_field_is_ignored(self):
+        """Only pricing and quota params clear, so a round-tripped blob cannot erase a key."""
+        params = _params_after(_patched_params(api_key=None, api_base=None))
+
+        assert params["api_key"] == "sk-provider-key"
+
+
+def _temperature_pinned_key() -> Deployment:
+    """A deployment whose provider refuses the temperature its callers hardcode."""
+    from litellm.types.router import ModelInfo
+
+    return Deployment(
+        model_name="flash-pool",
+        litellm_params=LiteLLM_Params(
+            model="openai/qwen-flash",
+            api_key="sk-provider-key",
+            pinned_params={"temperature": 0.3},
+            additional_drop_params=["top_p"],
+        ),
+        model_info=ModelInfo(id="dep-pinned-0"),
+    )
+
+
+def _pinned_params_after(patch: updateDeployment) -> dict:
+    from litellm.proxy.management_endpoints.model_management_endpoints import update_db_model
+
+    return json.loads(update_db_model(db_model=_temperature_pinned_key(), updated_patch=patch)["litellm_params"])
+
+
+class TestUpdateDBModelClearParamOverrides:
+    """Switching a param back to passing the caller's value through has to actually take,
+    or the form can set an override and never take it off again."""
+
+    @pytest.mark.parametrize(
+        ("field", "stored"),
+        [("pinned_params", {"temperature": 0.3}), ("additional_drop_params", ["top_p"])],
+    )
+    def test_an_explicit_null_unsets_the_override(self, field: str, stored: object):
+        assert _temperature_pinned_key().litellm_params.model_dump()[field] == stored
+
+        assert field not in _pinned_params_after(_patched_params(**{field: None}))
+
+    def test_unsetting_the_pin_leaves_the_drop_list_alone(self):
+        params = _pinned_params_after(_patched_params(pinned_params=None))
+
+        assert params["additional_drop_params"] == ["top_p"]
+
+    def test_unsetting_the_drop_list_leaves_the_pin_alone(self):
+        params = _pinned_params_after(_patched_params(additional_drop_params=None))
+
+        assert params["pinned_params"] == {"temperature": 0.3}
+
+    def test_clearing_an_override_does_not_take_the_api_key_with_it(self):
+        params = _pinned_params_after(_patched_params(pinned_params=None, additional_drop_params=None))
+
+        assert params["api_key"] == "sk-provider-key"
+
+    def test_a_new_pin_replaces_the_stored_one(self):
+        """The form always sends the whole map, so a param dropped from it is dropped
+        from the deployment rather than merged key by key with what was there."""
+        params = _pinned_params_after(_patched_params(pinned_params={"temperature": 1.0}))
+
+        assert params["pinned_params"] == {"temperature": 1.0}
+
+    def test_a_pin_is_stored_as_written_rather_than_encrypted(self):
+        """`_encrypted_for_storage` only reaches string values, and a pin the router
+        cannot read back is a pin that silently stops applying."""
+        params = _pinned_params_after(_patched_params(pinned_params={"reasoning_effort": "low"}))
+
+        assert params["pinned_params"] == {"reasoning_effort": "low"}

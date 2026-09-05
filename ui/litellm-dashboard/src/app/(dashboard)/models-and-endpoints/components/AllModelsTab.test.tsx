@@ -1,6 +1,6 @@
 import * as useAuthorizedModule from "@/app/(dashboard)/hooks/useAuthorized";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import AllModelsTab from "./AllModelsTab";
@@ -13,6 +13,28 @@ vi.mock("@/components/networking", () => ({
   modelDeleteCall: (...args: unknown[]) => mockModelDeleteCall(...args),
   modelPatchUpdateCall: (...args: unknown[]) => mockModelPatchUpdateCall(...args),
 }));
+
+const { providerProfiles, mockAddKeyMutate, mockProbeMutate } = vi.hoisted(() => ({
+  providerProfiles: { current: [] as unknown[] },
+  mockAddKeyMutate: vi.fn(),
+  mockProbeMutate: vi.fn(),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/providerProfiles/useProviderProfiles", () => ({
+  useProviderProfiles: () => ({ data: providerProfiles.current, isLoading: false }),
+  useAddProviderKey: () => ({ mutate: mockAddKeyMutate, isPending: false }),
+  useProbeRateLimit: () => ({ mutate: mockProbeMutate, isPending: false }),
+}));
+
+const OPENAI_PROFILE = {
+  provider: "openai",
+  api_base: null,
+  api_version: null,
+  key_count: 2,
+  quota_scope: null,
+  quota_reset_timezone: null,
+  models: [{ model_name: "gpt-4", litellm_model: "openai/gpt-4", rpm: 5, rpd: 100 }],
+};
 
 vi.mock("@/components/model_dashboard/ModelSettingsModal/ModelSettingsModal", () => ({
   default: function ModelSettingsModalMock({ isVisible }: { isVisible: boolean }) {
@@ -129,6 +151,7 @@ describe("AllModelsTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     modelsInfoCalls.length = 0;
+    providerProfiles.current = [OPENAI_PROFILE];
     setModelsInfo([makeRow()]);
     vi.spyOn(useAuthorizedModule, "default").mockReturnValue(MOCK_AUTHORIZED);
   });
@@ -324,6 +347,42 @@ describe("AllModelsTab", () => {
 
     await waitFor(() => {
       expect(mockModelPatchUpdateCall).toHaveBeenCalledWith("mock-access-token", { blocked: true }, "model-1");
+    });
+  });
+
+  describe("adding another key from the row", () => {
+    it("sends the new key to the clicked model's provider without the whole Add Model form", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+      render(<AllModelsTab {...defaultProps} />);
+
+      await user.click(await screen.findByTestId("model-add-key-model-1"));
+
+      expect(await screen.findByText("Add another key behind gpt-4")).toBeInTheDocument();
+      expect(screen.getByLabelText("Base URL")).toHaveValue("");
+
+      fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-second" } });
+      await user.click(screen.getByRole("button", { name: "Add Key" }));
+
+      await waitFor(() =>
+        expect(mockAddKeyMutate).toHaveBeenCalledWith(
+          { provider: "openai", api_key: "sk-second", api_base: null },
+          expect.anything(),
+        ),
+      );
+    });
+
+    it("offers no shortcut while no provider profile covers the deployment", async () => {
+      providerProfiles.current = [];
+      render(<AllModelsTab {...defaultProps} />);
+
+      expect(await screen.findByTestId("model-add-key-model-1")).toBeDisabled();
+    });
+
+    it("refuses to match a deployment on its public name when the provider model differs", async () => {
+      setModelsInfo([{ ...makeRow(), litellm_params: { model: "azure/gpt-4", custom_llm_provider: "azure" } }]);
+      render(<AllModelsTab {...defaultProps} />);
+
+      expect(await screen.findByTestId("model-add-key-model-1")).toBeDisabled();
     });
   });
 

@@ -8,6 +8,7 @@ import ModelsAndEndpointsPage from "./page";
 vi.mock("./panels/AllModelsPanel", () => ({ default: () => <div data-testid="panel-all-models" /> }));
 vi.mock("./panels/AddModelPanel", () => ({ default: () => <div data-testid="panel-add" /> }));
 vi.mock("./panels/AutoRoutersTabPanel", () => ({ default: () => <div data-testid="panel-auto-routers" /> }));
+vi.mock("./panels/ProviderKeysPanel", () => ({ default: () => <div data-testid="panel-provider-keys" /> }));
 vi.mock("./panels/LlmCredentialsPanel", () => ({ default: () => <div data-testid="panel-credentials" /> }));
 vi.mock("./panels/PassThroughPanel", () => ({ default: () => <div data-testid="panel-pass-through" /> }));
 vi.mock("./panels/HealthStatusPanel", () => ({ default: () => <div data-testid="panel-health" /> }));
@@ -126,6 +127,35 @@ describe("ModelsAndEndpointsPage", () => {
       const { queryByRole } = renderPage();
 
       expect(queryByRole("tab", { name: /Auto-Routers/ })).not.toBeInTheDocument();
+    });
+  });
+
+  // Where a provider's second key is added. Only a proxy admin may write a deployment, so the
+  // tab has no reason to appear for anyone else.
+  describe("Provider Keys tab", () => {
+    it("sits with the admin tabs, ahead of LLM Credentials", () => {
+      const { getAllByRole } = renderPage();
+
+      const tabs = getAllByRole("tab").map((tab) => tab.textContent ?? "");
+      const providerKeys = tabs.findIndex((label) => label.includes("Provider Keys"));
+      expect(providerKeys).toBeGreaterThan(-1);
+      expect(providerKeys).toBeLessThan(tabs.indexOf("LLM Credentials"));
+      expect(tabs[providerKeys]).toContain("Beta");
+    });
+
+    it("renders its panel when selected", async () => {
+      const user = userEvent.setup();
+      const { getByRole, getByTestId } = renderPage();
+
+      await user.click(getByRole("tab", { name: /Provider Keys/ }));
+      expect(getByTestId("panel-provider-keys")).toBeInTheDocument();
+    });
+
+    it("is hidden from non-admins", () => {
+      mockUseAuthorized.mockReturnValue(NON_ADMIN);
+      const { queryByRole } = renderPage();
+
+      expect(queryByRole("tab", { name: /Provider Keys/ })).not.toBeInTheDocument();
     });
   });
 });

@@ -1,5 +1,7 @@
 import React from "react";
 import { MultiSelect } from "@/components/shared/MultiSelect";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { SimpleTooltip } from "@/components/ui/tooltip";
@@ -34,6 +36,21 @@ import {
   PTU_END_FIELD,
 } from "../../utils/ptuValidation";
 import { usePtuCostAttributionEnabled } from "@/app/(dashboard)/hooks/uiSettings/usePtuCostAttributionEnabled";
+import { DEFAULT_QUOTA_SCOPE, QUOTA_SCOPE_CHOICES, type QuotaScopeMode } from "@/lib/quotaScope";
+import {
+  DEFAULT_TEMPERATURE_MODE,
+  PINNED_TEMPERATURE_FIELD,
+  pinnedTemperatureError,
+  TEMPERATURE_MODE_FIELD,
+  type TemperatureMode,
+} from "@/lib/temperatureMode";
+import {
+  PINNED_TEMPERATURE_HINT,
+  PINNED_TEMPERATURE_LABEL,
+  TEMPERATURE_MODE_HINT,
+  TEMPERATURE_MODE_LABEL,
+  TemperatureModeRadios,
+} from "../TemperatureModeFields";
 
 interface AdvancedSettingsProps {
   showAdvancedSettings: boolean;
@@ -69,10 +86,29 @@ const validateNumber = (_: unknown, value: unknown) => {
   return Promise.resolve();
 };
 
+const validateWholeRequests = (_: unknown, value: unknown) => {
+  if (!value) {
+    return Promise.resolve();
+  }
+  if (!/^\d+$/.test(String(value))) {
+    return Promise.reject("Enter a whole number of requests");
+  }
+  return Promise.resolve();
+};
+
 const usageCostRules = {
   deps: [PTU_COUNT_FIELD],
   validate: validatorRules({ validator: validateNumber }, ptuNoUsageCostRule(PTU_COUNT_FIELD)),
 };
+
+const wholeRequestsRules = { validate: validatorRules({ validator: validateWholeRequests }) };
+
+const validatePinnedTemperature = (_: unknown, value: unknown) => {
+  const problem = pinnedTemperatureError(String(value ?? ""));
+  return problem === null ? Promise.resolve() : Promise.reject(problem);
+};
+
+const pinnedTemperatureRules = { validate: validatorRules({ validator: validatePinnedTemperature }) };
 
 const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
   showAdvancedSettings,
@@ -85,6 +121,7 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
   const [customPricing, setCustomPricing] = React.useState(false);
   const [pricingModel, setPricingModel] = React.useState<"per_token" | "per_second">("per_token");
   const [showCacheControl, setShowCacheControl] = React.useState(false);
+  const [temperatureMode, setTemperatureMode] = React.useState<TemperatureMode>(DEFAULT_TEMPERATURE_MODE);
   const ptuCostAttributionEnabled = usePtuCostAttributionEnabled();
 
   const handlePricingModelChange =
@@ -464,6 +501,109 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                 )}
               </MountedFormField>
             )}
+            <MountedFormField
+              name="rpm"
+              label={labelWithHint(
+                "Requests Per Minute",
+                "Caps how many requests a minute this key may serve. Once the cap is hit the router skips this key until the minute resets and sends the request to another key for the same model.",
+              )}
+              rules={wholeRequestsRules}
+              className="mb-4 mt-4"
+            >
+              {(control) => (
+                <Input
+                  id={control.id}
+                  value={(control.value as string | undefined) ?? ""}
+                  onChange={control.onChange}
+                  onBlur={control.onBlur}
+                  placeholder="e.g. 5"
+                />
+              )}
+            </MountedFormField>
+
+            <MountedFormField
+              name="rpd"
+              label={labelWithHint(
+                "Requests Per Day",
+                "Caps the calendar day the way the per-minute cap covers a minute. A free tier that allows a few hundred requests a day is spent by lunchtime without this.",
+              )}
+              rules={wholeRequestsRules}
+              className="mb-4"
+            >
+              {(control) => (
+                <Input
+                  id={control.id}
+                  value={(control.value as string | undefined) ?? ""}
+                  onChange={control.onChange}
+                  onBlur={control.onBlur}
+                  placeholder="e.g. 100"
+                />
+              )}
+            </MountedFormField>
+
+            <MountedFormField
+              name="quota_scope"
+              label={labelWithHint(
+                "How Those Caps Are Counted",
+                "Only matters when one key serves more than one model, since each of them is its own pool and the caps above are either counted for each pool on its own or once for the key across all of them.",
+              )}
+              defaultValue={DEFAULT_QUOTA_SCOPE}
+              className="mb-4"
+            >
+              {(control) => (
+                <RadioGroup
+                  value={control.value as QuotaScopeMode}
+                  onValueChange={(picked) => control.onChange(picked as QuotaScopeMode)}
+                >
+                  {QUOTA_SCOPE_CHOICES.map((choice) => (
+                    <Label key={choice.value} className="items-start font-normal leading-normal">
+                      <RadioGroupItem value={choice.value} className="mt-0.5" />
+                      <span>
+                        <strong className="font-semibold">{choice.label}</strong>{" "}
+                        <span className="text-muted-foreground">{choice.description}</span>
+                      </span>
+                    </Label>
+                  ))}
+                </RadioGroup>
+              )}
+            </MountedFormField>
+
+            <MountedFormField
+              name={TEMPERATURE_MODE_FIELD}
+              label={labelWithHint(TEMPERATURE_MODE_LABEL, TEMPERATURE_MODE_HINT)}
+              defaultValue={DEFAULT_TEMPERATURE_MODE}
+              className="mb-4"
+            >
+              {(control) => (
+                <TemperatureModeRadios
+                  value={control.value as TemperatureMode}
+                  onChange={(picked) => {
+                    control.onChange(picked);
+                    setTemperatureMode(picked);
+                  }}
+                />
+              )}
+            </MountedFormField>
+
+            {temperatureMode === "pin" && (
+              <MountedFormField
+                name={PINNED_TEMPERATURE_FIELD}
+                label={labelWithHint(PINNED_TEMPERATURE_LABEL, PINNED_TEMPERATURE_HINT)}
+                rules={pinnedTemperatureRules}
+                className="mb-4"
+              >
+                {(control) => (
+                  <Input
+                    id={control.id}
+                    value={(control.value as string | undefined) ?? ""}
+                    onChange={control.onChange}
+                    onBlur={control.onBlur}
+                    placeholder="e.g. 0.3"
+                  />
+                )}
+              </MountedFormField>
+            )}
+
             <MountedFormField
               name="litellm_extra_params"
               label={labelWithHint(

@@ -192,7 +192,10 @@ function LoginPageContent() {
           <CardContent>
             <div className="flex w-full flex-col gap-4">
               <div className="text-center">
-                <h2 className="text-3xl font-semibold text-foreground">🚅 LiteLLM</h2>
+                <h2 className="flex items-baseline justify-center gap-1.5 text-3xl font-semibold tracking-tight text-foreground">
+                  LiteLLM
+                  <span className="font-light text-muted-foreground">Advanced</span>
+                </h2>
               </div>
 
               <Alert variant="warning">
@@ -222,12 +225,15 @@ function LoginPageContent() {
           <TooltipProvider>
             <div className="flex w-full flex-col gap-4">
               <div className="text-center">
-                <h2 className="text-3xl font-semibold text-foreground">🚅 LiteLLM</h2>
+                <h2 className="flex items-baseline justify-center gap-1.5 text-3xl font-semibold tracking-tight text-foreground">
+                  LiteLLM
+                  <span className="font-light text-muted-foreground">Advanced</span>
+                </h2>
               </div>
 
               <div className="text-center">
                 <h3 className="text-2xl font-semibold text-foreground">Login</h3>
-                <p className="text-sm text-muted-foreground">Access your LiteLLM Admin UI.</p>
+                <p className="text-sm text-muted-foreground">Access your LiteLLM Advanced dashboard.</p>
               </div>
 
               {!uiConfig?.hide_default_credentials_hint && (

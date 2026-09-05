@@ -1,0 +1,82 @@
+name: litellm-advanced
+
+services:
+  litellm:
+    build:
+      context: .
+      target: runtime
+    image: litellm-advanced:local
+    restart: unless-stopped
+    command:
+      - "--config=/app/config.yaml"
+      - "--port=4000"
+      - "--use_v2_migration_resolver"
+      - "--enforce_prisma_migration_check"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/litellm
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in .env}
+      - STORE_MODEL_IN_DB=True
+      - UI_USERNAME=${UI_USERNAME:-admin}
+      - UI_PASSWORD=${UI_PASSWORD:-${LITELLM_MASTER_KEY}}
+      # passed through only when set, since an empty one would make every absolute
+      # url the proxy builds relative
+      - PROXY_BASE_URL
+      # uvicorn only honours X-Forwarded-Proto from addresses listed here, so without it
+      # a request through the caddy service looks like plain http to the proxy
+      - FORWARDED_ALLOW_IPS
+    # loopback only: put a TLS reverse proxy in front, or reach it over an ssh tunnel
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # starts only with `--profile tls`, and needs a ./Caddyfile next to this one
+  caddy:
+    profiles:
+      - tls
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - litellm
+
+volumes:
+  db_data:
+    name: litellm_advanced_db_data
+  caddy_data:
+    name: litellm_advanced_caddy_data
+  caddy_config:
+    name: litellm_advanced_caddy_config

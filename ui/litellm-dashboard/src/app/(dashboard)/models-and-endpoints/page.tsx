@@ -23,6 +23,7 @@ import HealthStatusPanel from "@/app/(dashboard)/models-and-endpoints/panels/Hea
 import ModelRetrySettingsPanel from "@/app/(dashboard)/models-and-endpoints/panels/ModelRetrySettingsPanel";
 import ModelGroupAliasPanel from "@/app/(dashboard)/models-and-endpoints/panels/ModelGroupAliasPanel";
 import AccessGroupBudgetsPanel from "@/app/(dashboard)/models-and-endpoints/panels/AccessGroupBudgetsPanel";
+import ProviderKeysPanel from "@/app/(dashboard)/models-and-endpoints/panels/ProviderKeysPanel";
 import PriceDataPanel from "@/app/(dashboard)/models-and-endpoints/panels/PriceDataPanel";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -30,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 type ModelTabSlug =
   | "add"
   | "auto-routers"
+  | "provider-keys"
   | "llm-credentials"
   | "pass-through"
   | "health"
@@ -43,6 +45,7 @@ const BASE_TAB_KEY = "all-models";
 const TAB_LABELS: Record<ModelTabSlug, string> = {
   add: "Add Model",
   "auto-routers": "Auto-Routers",
+  "provider-keys": "Provider Keys",
   "llm-credentials": "LLM Credentials",
   "pass-through": "Pass-Through Endpoints",
   health: "Health Status",
@@ -52,6 +55,8 @@ const TAB_LABELS: Record<ModelTabSlug, string> = {
   "price-data": "Price Data Reload",
 };
 
+const BETA_TABS: ReadonlySet<ModelTabSlug> = new Set(["auto-routers", "provider-keys", "access-group-budgets"]);
+
 const renderPanel = (key: string) => {
   switch (key) {
     case BASE_TAB_KEY:
@@ -60,6 +65,8 @@ const renderPanel = (key: string) => {
       return <AutoRoutersTabPanel />;
     case "add":
       return <AddModelPanel />;
+    case "provider-keys":
+      return <ProviderKeysPanel />;
     case "llm-credentials":
       return <LlmCredentialsPanel />;
     case "pass-through":
@@ -108,6 +115,7 @@ export default function ModelsAndEndpointsPage() {
       ...(isAdmin || canCreate ? (["auto-routers"] as const) : []),
       ...(isAdmin
         ? ([
+            "provider-keys",
             "llm-credentials",
             "pass-through",
             "health",
@@ -124,7 +132,7 @@ export default function ModelsAndEndpointsPage() {
   const allModelsLabel = isAdmin ? "All Models" : "Your Models";
   const tabLabel = (slug: "" | ModelTabSlug): React.ReactNode => {
     if (!slug) return allModelsLabel;
-    if (slug === "auto-routers" || slug === "access-group-budgets") {
+    if (BETA_TABS.has(slug)) {
       return (
         <span className="flex items-center gap-2">
           {TAB_LABELS[slug]} <BetaBadge />

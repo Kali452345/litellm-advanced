@@ -549,6 +549,20 @@ def _coerce_metadata_to_dict(value: Any) -> dict[str, Any] | None:
     return None
 
 
+# Proxy-admin-only routes whose typed body *is* a provider credential plus the base url
+# to reach it, so the huntr-4001e1a2 blocklist would reject the route's own contract.
+# Neither route can do what that bounty describes: they never reach the router, the
+# credential they carry is the one being registered or measured rather than one the
+# deployment pinned, and both 403 anyone short of a proxy admin. Matched against the
+# template FastAPI resolved, so an unmatched path (None) stays screened.
+_BODY_OWNED_CREDENTIAL_ROUTES: Final[frozenset[str]] = frozenset(
+    {
+        "/provider/keys",
+        "/provider/rate_limit/probe",
+    }
+)
+
+
 async def pre_db_read_auth_checks(
     request: Request,
     request_data: dict,
@@ -556,7 +570,8 @@ async def pre_db_read_auth_checks(
 ):
     """
     1. Checks if request size is under max_request_size_mb (if set)
-    2. Check if request body is safe (example user has not set api_base in request body)
+    2. Check if request body is safe (example user has not set api_base in request body),
+       unless the matched route is one whose own body owns those params
     3. Check if IP address is allowed (if set)
     4. Check if request route is an allowed route on the proxy (if set)
 
@@ -572,12 +587,13 @@ async def pre_db_read_auth_checks(
     await check_if_request_size_is_safe(request=request)
 
     # Check 2. Request body is safe
-    is_request_body_safe(
-        request_body=request_data,
-        general_settings=general_settings,
-        llm_router=llm_router,
-        model=request_data.get("model", ""),  # [TODO] use model passed in url as well (azure openai routes)
-    )
+    if get_request_route_template(request) not in _BODY_OWNED_CREDENTIAL_ROUTES:
+        is_request_body_safe(
+            request_body=request_data,
+            general_settings=general_settings,
+            llm_router=llm_router,
+            model=request_data.get("model", ""),  # [TODO] use model passed in url as well (azure openai routes)
+        )
 
     # Check 3. Check if IP address is allowed
     is_valid_ip, passed_in_ip = _check_valid_ip(

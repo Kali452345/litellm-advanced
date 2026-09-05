@@ -4884,9 +4884,9 @@ def _get_order_filtered_deployments(healthy_deployments: list[dict], target_orde
         return healthy_deployments
 
     # Default: pick min order group
-    _valid_orders: Final[list[int]] = [
-        o for deployment in healthy_deployments for o in [_get_deployment_order(deployment)] if o is not None
-    ]
+    _valid_orders: Final = tuple(
+        order for deployment in healthy_deployments if (order := _get_deployment_order(deployment)) is not None
+    )
     min_order: Final[int | None] = min(_valid_orders) if _valid_orders else None
 
     if min_order is not None:
@@ -4901,13 +4901,14 @@ def _get_order_filtered_deployments(healthy_deployments: list[dict], target_orde
 def _get_excluded_filtered_deployments(
     healthy_deployments: list[dict],
     excluded_deployment_ids: Iterable[str] | None = None,
-) -> list:
+) -> list[dict]:
     """
     Filter out deployments whose `model_info.id` appears in `excluded_deployment_ids`.
 
     Used by weighted-routing failover so a single logical request can re-pick
     across the remaining deployments in the same model group after one of them
-    has failed.
+    has failed, and by quota routing to drop the credentials that have no
+    request allowance left in the current window.
 
     If the filter would leave no deployments, an empty list is returned so the
     caller raises its usual no-deployments error and the weighted-failover

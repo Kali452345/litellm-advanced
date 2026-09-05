@@ -104,7 +104,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { mode } = usePluginMode();
 
-  const page = legacyKeyForPathname(pathname) || searchParams.get("page") || "api-keys";
+  const page = legacyKeyForPathname(pathname) || searchParams.get("page") || "overview";
   const isGateway = mode === "ai-gateway";
 
   const navigateToPage = (newPage: string) => {

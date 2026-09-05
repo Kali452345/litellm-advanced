@@ -6,6 +6,8 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from litellm.constants import DEFAULT_QUOTA_MAX_WAIT_SECONDS
+
 # Fallback Management Types
 
 
@@ -268,5 +270,21 @@ ROUTER_SETTINGS_FIELDS: Final[list[RouterSettingsField]] = [
         field_description="Disable cooldown mechanism for failed deployments",
         field_default=None,
         ui_field_name="Disable Cooldowns",
+    ),
+    RouterSettingsField(
+        field_name="enable_quota_routing",
+        field_type="Boolean",
+        field_value=None,
+        field_description="Count every request against the rpm and rpd set on each key, and route around a key that has spent its allowance instead of letting the request fail",
+        field_default=False,
+        ui_field_name="Enforce Per-key Quotas",
+    ),
+    RouterSettingsField(
+        field_name="quota_max_wait_seconds",
+        field_type="Float",
+        field_value=None,
+        field_description="How long a request may be held when every key behind the model is spent, so a minute window that rolls over shortly is a slower response rather than a failure. 0 never holds",
+        field_default=DEFAULT_QUOTA_MAX_WAIT_SECONDS,
+        ui_field_name="Quota Hold Budget (seconds)",
     ),
 ]

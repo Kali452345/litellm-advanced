@@ -2406,10 +2406,12 @@ def cost_tracking():
     global prisma_client
     if prisma_client is not None:
         from litellm.integrations.shadow_eval_logger import ShadowEvalLogger
+        from litellm.proxy.spend_tracking.deployment_error_logs import deployment_error_logger
 
         litellm.logging_callback_manager.add_litellm_callback(_ProxyDBLogger())
         litellm.logging_callback_manager.add_litellm_async_success_callback(_ProxyDBLogger())
         litellm.logging_callback_manager.add_litellm_callback(ShadowEvalLogger())
+        litellm.logging_callback_manager.add_litellm_callback(deployment_error_logger())
 
 
 # Bounds authoritative DB re-reads when enforcing a budget against a

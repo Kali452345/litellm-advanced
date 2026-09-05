@@ -1,9 +1,14 @@
 """
 Tests for the provider rate limit probe.
 
-What walking one key until the provider refuses reports back, and how a failure from
-the provider is read.
+What walking one key until the provider refuses reports back, how a failure from
+the provider is read, and what the same bound looks like when it is read back out of
+refusals that were already logged.
 """
+
+import datetime as dt
+import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -20,6 +25,7 @@ from litellm.proxy.management_endpoints.provider_rate_limit_endpoints import (
     RateLimited,
     Refused,
     attempt_outcome_from,
+    get_observed_rate_limits,
     probe_provider_rate_limit,
     probe_rate_limit,
 )
@@ -211,3 +217,73 @@ def test_a_credential_field_outside_the_schema_is_refused(field: str):
     the schema is the only thing left refusing the rest of what that blocklist covers."""
     with pytest.raises(ValidationError):
         ProbeRateLimitRequest(**{"model": "gemini/gemini-2.5-flash", "api_key": "k1", field: "https://attacker.test"})
+
+
+def _refusal_row(*, used: int = 6) -> dict[str, object]:
+    return {
+        "model_id": "d1",
+        "model_group": "flash-pool",
+        "litellm_model_name": "gemini-2.5-flash",
+        "api_base": "https://generativelanguage.googleapis.com",
+        "endTime": dt.datetime(2026, 9, 5, tzinfo=dt.timezone.utc),
+        "request_kwargs": json.dumps(
+            {"quota_enforced": True, "quota_windows": [{"kind": "rpm", "limit": 5, "used": used}]}
+        ),
+    }
+
+
+class _Table:
+    def __init__(self, rows: tuple[dict[str, object], ...]):
+        self.rows = rows
+        self.query: dict[str, object] = {}
+
+    async def find_many(self, **kwargs: object) -> tuple[dict[str, object], ...]:
+        self.query = kwargs
+        return self.rows
+
+
+class _Prisma:
+    def __init__(self, table: _Table):
+        self.db = SimpleNamespace(litellm_errorlogs=table)
+
+
+async def test_observed_limits_come_from_the_refusals_inside_the_window_asked_for(monkeypatch: pytest.MonkeyPatch):
+    table = _Table((_refusal_row(used=6),))
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _Prisma(table))
+
+    observed = await get_observed_rate_limits(
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN), hours=3
+    )
+
+    lookback = dt.datetime.now(dt.timezone.utc) - observed.since
+    assert dt.timedelta(hours=3) <= lookback < dt.timedelta(hours=3, minutes=1)
+    assert table.query["where"]["startTime"]["gte"] == observed.since
+    assert observed.keys[0].windows[0].suggested_limit == 5
+
+
+async def test_reading_observed_limits_is_allowed_to_a_read_only_admin(monkeypatch: pytest.MonkeyPatch):
+    """It sends no traffic and spends nothing, so the probe's stricter check does not apply."""
+    table = _Table((_refusal_row(),))
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _Prisma(table))
+
+    observed = await get_observed_rate_limits(
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY)
+    )
+
+    assert observed.refusals_read == 1
+
+
+async def test_reading_observed_limits_is_denied_to_a_role_without_the_admin_view():
+    with pytest.raises(HTTPException) as denied:
+        await get_observed_rate_limits(user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.INTERNAL_USER))
+
+    assert denied.value.status_code == 403
+
+
+async def test_observed_limits_say_so_when_there_is_no_database_to_read(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+
+    with pytest.raises(HTTPException) as raised:
+        await get_observed_rate_limits(user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN))
+
+    assert raised.value.status_code == 500

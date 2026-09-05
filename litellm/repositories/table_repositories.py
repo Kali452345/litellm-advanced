@@ -68,6 +68,10 @@ class SpendLogsRepository(PrismaTableRepository["prisma_models.LiteLLM_SpendLogs
     table_name = "litellm_spendlogs"
 
 
+class ErrorLogsRepository(PrismaTableRepository["prisma_models.LiteLLM_ErrorLogs"]):
+    table_name = "litellm_errorlogs"
+
+
 class BudgetWindowSpendRepository(PrismaTableRepository["prisma_models.LiteLLM_BudgetWindowSpend"]):
     table_name = "litellm_budgetwindowspend"
 

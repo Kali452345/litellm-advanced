@@ -12128,6 +12128,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/provider/rate_limit/observed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Observed Rate Limits
+         * @description What providers actually allowed, derived from the rate limit refusals already logged
+         */
+        get: operations["get_observed_rate_limits_provider_rate_limit_observed_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/provider/rate_limit/probe": {
         parameters: {
             query?: never;
@@ -32553,6 +32573,104 @@ export interface components {
             password?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** ObservedKeyLimits */
+        ObservedKeyLimits: {
+            /**
+             * Api Base
+             * @default
+             */
+            api_base: string;
+            /**
+             * Last Refusal
+             * Format: date-time
+             */
+            last_refusal: string;
+            /**
+             * Litellm Model Name
+             * @description The model string the provider itself was sent
+             */
+            litellm_model_name: string;
+            /**
+             * Longest Retry After Seconds
+             * @description The longest wait any of these refusals asked for. Seconds point at the minute window, hours at a daily cap that no amount of rotation clears before tomorrow
+             */
+            longest_retry_after_seconds?: number | null;
+            /**
+             * Model Group
+             * @description The name callers ask for, which this key is one of the pool behind
+             */
+            model_group: string;
+            /**
+             * Model Id
+             * @description The deployment id of the key that was refused
+             */
+            model_id: string;
+            /**
+             * Refusals
+             * @description Refusals behind these windows
+             */
+            refusals: number;
+            /**
+             * Windows
+             * @default []
+             */
+            windows: components["schemas"]["ObservedWindow"][];
+        };
+        /** ObservedRateLimitsResponse */
+        ObservedRateLimitsResponse: {
+            /**
+             * Keys
+             * @default []
+             */
+            keys: components["schemas"]["ObservedKeyLimits"][];
+            /** Refusals Read */
+            refusals_read: number;
+            /**
+             * Since
+             * Format: date-time
+             * @description Refusals older than this were not read
+             */
+            since: string;
+            /**
+             * Unmetered Refusals
+             * @description Refusals with no usable count behind them, from quota routing being off, a key with no cap configured, or a window that rolled over as the refusal was recorded
+             */
+            unmetered_refusals: number;
+        };
+        /** ObservedWindow */
+        ObservedWindow: {
+            /**
+             * Configured Limit
+             * @description What this window was capped at when the most recent refusal landed
+             */
+            configured_limit: number;
+            /**
+             * Highest Count At Refusal
+             * @description The largest one, which is worth comparing against the lowest: a spread means the ceiling moves, and a single repeated number means it is a hard cap
+             */
+            highest_count_at_refusal: number;
+            /**
+             * Kind
+             * @description rpm for the minute window, rpd for the day window
+             * @enum {string}
+             */
+            kind: "rpm" | "rpd";
+            /**
+             * Lowest Count At Refusal
+             * @description The smallest spend this window held when a refusal arrived
+             */
+            lowest_count_at_refusal: number;
+            /**
+             * Refusals
+             * @description Refusals that carried a usable count for this window
+             */
+            refusals: number;
+            /**
+             * Suggested Limit
+             * @description One below the lowest refusal, so the highest figure this key is proven to accept. Zero means even the first request of a window was refused, so no per-window cap will fit under this ceiling
+             */
+            suggested_limit: number;
         };
         /**
          * OpenIdConnectSecurityScheme
@@ -54747,6 +54865,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderProfilesResponse"];
+                };
+            };
+        };
+    };
+    get_observed_rate_limits_provider_rate_limit_observed_get: {
+        parameters: {
+            query?: {
+                /** @description How far back to read refusals */
+                hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservedRateLimitsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

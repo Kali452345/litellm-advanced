@@ -1,11 +1,13 @@
 """
-PROVIDER RATE LIMIT PROBE
+PROVIDER RATE LIMITS, MEASURED
 
 What a provider's per-minute request cap actually is, for the providers that never
 publish the figure.
 
 POST /provider/rate_limit/probe - send requests to one api key until the provider
     answers with a rate limit, and report how many it accepted before that
+GET /provider/rate_limit/observed - read the same bound back out of the refusals the
+    proxy has already logged, without sending a provider anything
 
 The accepted count is the cap, so it is the number that goes into Requests Per Minute
 for that key. Only real requests can learn it, so the probe spends the key's allowance
@@ -17,22 +19,38 @@ A probe that never sees a rate limit reports a floor rather than a cap: the coun
 reached is all that was proven. The whole walk has to fit inside one minute, because a
 minute rolling over refills the allowance and no rate limit would ever arrive, so it
 stops at a deadline short of that and says which of the two happened.
+
+The observed view is the one to reach for first, because the traffic behind its rows
+was already paid for and it keeps answering as caps move under a key. It only has
+something to say once refusals have been logged with quota routing enforcing.
 """
 
 import asyncio
+import datetime as dt
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Annotated, Final, Literal, TypeAlias
+from typing import Annotated, Final, Literal, Never, TypeAlias
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import ReadOnly, TypedDict
 
 from litellm.exceptions import RateLimitError, validate_rate_limit_type
-from litellm.proxy._types import CommonProxyErrors, LitellmUserRoles, UserAPIKeyAuth
+from litellm.proxy._types import (
+    CommonProxyErrors,
+    LitellmUserRoles,
+    UserAPIKeyAuth,
+    user_api_key_has_admin_view,
+)
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.spend_tracking.observed_rate_limits import (
+    DEFAULT_LOOKBACK_HOURS,
+    ObservedRateLimitsResponse,
+    derive_observed_limits,
+    read_refusals,
+)
 from litellm.types.llms.openai import ChatCompletionUserMessage
 
 router: Final = APIRouter(tags=["provider profile management"])  # mutable-ok: fastapi types tags as list
@@ -41,6 +59,7 @@ _WAVE_SIZE: Final = 4
 _WINDOW_SECONDS: Final = 50.0
 _ATTEMPT_TIMEOUT_SECONDS: Final = 15.0
 _MESSAGE_LIMIT: Final = 400
+_MAX_LOOKBACK_HOURS: Final = 24 * 30
 
 ProbeOutcome: TypeAlias = Literal["rate_limited", "already_limited", "ceiling_reached", "deadline_reached", "refused"]
 
@@ -119,6 +138,11 @@ class ProbeCall:
 
 class _ErrorDetail(TypedDict):
     error: ReadOnly[str]
+
+
+def _raise(*, status_code: int, error: str) -> Never:
+    detail: Final[_ErrorDetail] = {"error": error}
+    raise HTTPException(status_code=status_code, detail=detail)
 
 
 async def probe_rate_limit(
@@ -242,8 +266,7 @@ async def probe_provider_rate_limit(
     ```
     """
     if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
-        detail: Final[_ErrorDetail] = {"error": CommonProxyErrors.not_allowed_access.value}
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+        _raise(status_code=status.HTTP_403_FORBIDDEN, error=CommonProxyErrors.not_allowed_access.value)
     call: Final = ProbeCall(
         model=request.model,
         api_key=request.api_key,
@@ -256,3 +279,33 @@ async def probe_provider_rate_limit(
         attempt=partial(_one_attempt, call),
         now=time.monotonic,
     )
+
+
+@router.get(
+    "/provider/rate_limit/observed",
+    description="What providers actually allowed, derived from the rate limit refusals already logged",
+    response_model=ObservedRateLimitsResponse,
+)
+async def get_observed_rate_limits(
+    user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
+    hours: Annotated[
+        int,
+        Query(ge=1, le=_MAX_LOOKBACK_HOURS, description="How far back to read refusals"),
+    ] = DEFAULT_LOOKBACK_HOURS,
+) -> ObservedRateLimitsResponse:
+    """
+    ```bash
+    curl -X GET 'http://0.0.0.0:4000/provider/rate_limit/observed?hours=24' -H 'Authorization: Bearer sk-1234'
+    ```
+    """
+    from litellm.proxy.proxy_server import prisma_client
+
+    if not user_api_key_has_admin_view(user_api_key_dict):
+        _raise(status_code=status.HTTP_403_FORBIDDEN, error=CommonProxyErrors.not_allowed_access.value)
+    if prisma_client is None:
+        _raise(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error=CommonProxyErrors.db_not_connected_error.value,
+        )
+    since: Final = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+    return derive_observed_limits(refusals=await read_refusals(prisma_client, since=since), since=since)

@@ -607,6 +607,27 @@ class RouterErrors(enum.Enum):
     )
 
 
+_NO_DEPLOYMENT_MESSAGES: Final = (
+    "No healthy deployment available",
+    RouterErrors.no_deployments_available.value,
+)
+
+
+def router_error_status_code(message: str) -> Literal["429", "401"] | None:
+    """
+    The status code the proxy answers a router refusal with, read off the refusal's message.
+
+    Router refusals are plain `ValueError`s carrying no status code of their own, so the
+    message is the only thing that says what the caller was served, and an error log row
+    recording anything else is not a log of that response.
+    """
+    if any(text in message for text in _NO_DEPLOYMENT_MESSAGES):
+        return "429"
+    if RouterErrors.no_deployments_with_tag_routing.value in message:
+        return "401"
+    return None
+
+
 class AllowedFailsPolicy(BaseModel):
     """
     Use this to set a custom number of allowed fails/minute before cooling down a deployment

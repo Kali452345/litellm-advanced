@@ -301,3 +301,42 @@ async def test_a_refusal_carries_the_wait_the_provider_asked_for():
 def test_a_successful_call_is_not_a_failed_one():
     assert failed_call_in(_payload(status="success")) is None
     assert failed_call_in(_payload()) is not None
+
+
+def _uncoded_call(*, message: str, error_class: str) -> FailedCall:
+    """A failed attempt whose exception carried no status code, the shape a router refusal has."""
+    return FailedCall.model_validate(
+        {
+            "status": "failure",
+            "litellm_call_id": "call-1",
+            "startTime": 1_800_000_000.0,
+            "endTime": 1_800_000_010.5,
+            "model": "flash-pool",
+            "model_group": "flash-pool",
+            "error_information": {"error_class": error_class, "error_message": message},
+        }
+    )
+
+
+def test_a_cooldown_refusal_is_logged_as_the_429_the_caller_was_served():
+    """`RouterRateLimitError` is a bare ValueError, so its message is the only thing that says 429."""
+    row = error_row(
+        call=_uncoded_call(
+            message="No deployments available for selected model, Try again in 5 seconds. Passed model=flash-pool.",
+            error_class="RouterRateLimitError",
+        ),
+        snapshot=NO_QUOTA,
+        retry_after=None,
+    )
+
+    assert row.status_code == "429"
+
+
+def test_a_failure_that_is_not_a_refusal_gets_no_invented_status_code():
+    row = error_row(
+        call=_uncoded_call(message="connection reset by peer", error_class="APIConnectionError"),
+        snapshot=NO_QUOTA,
+        retry_after=None,
+    )
+
+    assert row.status_code == ""

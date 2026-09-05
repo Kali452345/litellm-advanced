@@ -36,6 +36,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.repositories.table_repositories import ErrorLogsRepository
 from litellm.router_utils.quota import AtomicWindowCounter, QuotaEnforcer, QuotaWindowKind
+from litellm.types.router import router_error_status_code
 
 _MESSAGE_LIMIT: Final = 2000
 _DRAIN_DELAY_SECONDS: Final = 0.5
@@ -178,8 +179,12 @@ def error_row(*, call: FailedCall, snapshot: QuotaSnapshot, retry_after: float |
     same `litellm_call_id`, so the deployment it landed on and the instant it ended are
     what separate one attempt's row from the next one's. That also makes the row
     idempotent, so an attempt logged twice cannot count as two refusals.
+    `status_code` falls back to the code the refusal's own message says it was served
+    as, because a router refusal is a plain `ValueError` with no code on it, and a row
+    that leaves the column empty is invisible to every panel that counts a 429.
     """
     info: Final = call.error_information
+    message: Final = info.error_message or call.error_str or ""
     return DeploymentErrorRow(
         request_id=f"{call.litellm_call_id or call.trace_id or ''}:{call.model_id or ''}:{call.end_time:.3f}",
         start_time=dt.datetime.fromtimestamp(call.start_time, dt.timezone.utc),
@@ -189,8 +194,8 @@ def error_row(*, call: FailedCall, snapshot: QuotaSnapshot, retry_after: float |
         litellm_model_name=call.model,
         model_id=call.model_id or "",
         exception_type=info.error_class or "",
-        exception_string=(info.error_message or call.error_str or "")[:_MESSAGE_LIMIT],
-        status_code=info.error_code or "",
+        exception_string=message[:_MESSAGE_LIMIT],
+        status_code=info.error_code or router_error_status_code(message) or "",
         context=DeploymentErrorContext(
             trace_id=call.trace_id,
             custom_llm_provider=call.custom_llm_provider,

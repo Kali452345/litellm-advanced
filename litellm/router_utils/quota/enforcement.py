@@ -45,12 +45,10 @@ from litellm.router_utils.quota.counter import (
 )
 from litellm.router_utils.quota.scope import DEFAULT_QUOTA_SCOPE_MODE, QuotaScope, resolve_quota_scope
 from litellm.router_utils.quota.window import QuotaWindowKind, UnknownQuotaTimezoneError
-from litellm.types.router import QuotaScopeMode
+from litellm.types.router import QUOTA_PARAM_NAMES, QuotaScopeMode
 
 _DeploymentT: Final = TypeVar("_DeploymentT", bound=Mapping[str, object])
 _SettingT: Final = TypeVar("_SettingT")
-
-_QUOTA_PARAM_NAMES: Final = ("rpd", "quota_scope", "quota_scope_id", "quota_reset_timezone")
 
 # Strategies `Router.async_get_available_deployment` hands off to the sync path,
 # which has no reservation step. Anything not listed here reaches the async path.
@@ -450,7 +448,7 @@ def warn_on_unenforced_quotas(
             verbose_router_logger.warning(
                 "Deployments declare quota params (%s) but the router was built with "
                 "enable_quota_routing=False, so no per-credential quota is enforced.",
-                ", ".join(_QUOTA_PARAM_NAMES),
+                ", ".join(QUOTA_PARAM_NAMES),
             )
         return
     if routing_strategy in _STRATEGIES_WITHOUT_QUOTA_ENFORCEMENT:
@@ -464,7 +462,7 @@ def warn_on_unenforced_quotas(
 
 def _declares_quota_params(deployment: Mapping[str, object]) -> bool:
     view: Final = _parse_deployment(deployment)
-    return view is not None and not view.litellm_params.model_fields_set.isdisjoint(_QUOTA_PARAM_NAMES)
+    return view is not None and not view.litellm_params.model_fields_set.isdisjoint(QUOTA_PARAM_NAMES)
 
 
 def _parse_deployment(deployment: Mapping[str, object]) -> _QuotaDeploymentView | None:

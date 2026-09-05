@@ -535,6 +535,8 @@ class DeploymentTypedDict(TypedDict, total=False):
 
 SPECIAL_MODEL_INFO_PARAMS = tuple(MirroredPricingParams.model_fields)
 
+QUOTA_PARAM_NAMES: Final = ("rpd", "quota_scope", "quota_scope_id", "quota_reset_timezone")
+
 
 class Deployment(BaseModel):
     model_name: str

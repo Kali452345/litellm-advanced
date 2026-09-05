@@ -98,12 +98,14 @@ from litellm.types.proxy.management_endpoints.model_management_endpoints import 
     UpdateUsefulLinksRequest,
 )
 from litellm.types.router import (
+    QUOTA_PARAM_NAMES,
     SPECIAL_MODEL_INFO_PARAMS,
     Deployment,
     GenericLiteLLMParams,
     LiteLLM_Params,
     ModelInfo,
     updateDeployment,
+    updateLiteLLMParams,
 )
 from litellm.utils import get_utc_datetime
 
@@ -346,6 +348,15 @@ def _raise_if_rate_limits_required_but_missing(*, litellm_params: GenericLiteLLM
 
 
 _PTU_PRICED_PAIR: Final = frozenset({"ptu_count", "cost_per_ptu_per_hour"})
+
+
+def _explicitly_cleared(patch: updateLiteLLMParams | ModelInfo, clearable: Sequence[str]) -> tuple[str, ...]:
+    """The fields a patch sent as an explicit null, so a merge can drop them.
+
+    A field left out of the request is absent from `model_fields_set` and keeps its
+    stored value, which is what makes a partial patch partial.
+    """
+    return tuple(field for field in clearable if field in patch.model_fields_set and getattr(patch, field) is None)
 
 
 def _explicitly_cleared_ptu_fields(model_info: ModelInfo | None) -> frozenset[str]:
@@ -616,16 +627,20 @@ def update_db_model(db_model: Deployment, updated_patch: updateDeployment) -> Pr
     # model_info fields like team_id or access groups. SPECIAL_MODEL_INFO_PARAMS are
     # mirrored between litellm_params and model_info by Deployment.__init__, so the
     # clear propagates to both blobs.
+    #
+    # QUOTA_PARAM_NAMES live in litellm_params alone, so their clear pops from there
+    # only. Without it a scope an operator set once can never be unset, which leaves
+    # two credentials permanently sharing one counter.
     if updated_patch.litellm_params:
-        for field in updated_patch.litellm_params.model_fields_set:
-            if field in SPECIAL_MODEL_INFO_PARAMS and getattr(updated_patch.litellm_params, field) is None:
-                merged_litellm_params.pop(field, None)
-                merged_model_info.pop(field, None)
+        for field in _explicitly_cleared(updated_patch.litellm_params, SPECIAL_MODEL_INFO_PARAMS):
+            merged_litellm_params.pop(field, None)
+            merged_model_info.pop(field, None)
+        for field in _explicitly_cleared(updated_patch.litellm_params, QUOTA_PARAM_NAMES):
+            merged_litellm_params.pop(field, None)
     if updated_patch.model_info:
-        for field in updated_patch.model_info.model_fields_set:
-            if field in SPECIAL_MODEL_INFO_PARAMS and getattr(updated_patch.model_info, field) is None:
-                merged_model_info.pop(field, None)
-                merged_litellm_params.pop(field, None)
+        for field in _explicitly_cleared(updated_patch.model_info, SPECIAL_MODEL_INFO_PARAMS):
+            merged_model_info.pop(field, None)
+            merged_litellm_params.pop(field, None)
         for field in _explicitly_cleared_ptu_fields(updated_patch.model_info):
             merged_model_info.pop(field, None)
 

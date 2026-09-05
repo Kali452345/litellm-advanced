@@ -4658,3 +4658,77 @@ class TestStoredParamsThatCannotBeEncrypted:
 
         assert "deleted successfully" in result["message"]
         mock_prisma.db.litellm_proxymodeltable.delete.assert_awaited_once_with(where={"model_id": self._MODEL_ID})
+
+
+def _pooled_key() -> Deployment:
+    """One key of a rotating pool, metered on a scope it shares with a sibling key."""
+    from litellm.types.router import ModelInfo
+
+    return Deployment(
+        model_name="flash-pool",
+        litellm_params=LiteLLM_Params(
+            model="openai/qwen-flash",
+            api_key="sk-provider-key",
+            rpm=5,
+            rpd=100,
+            quota_scope_id="one-shared-account",
+            quota_reset_timezone="America/Los_Angeles",
+        ),
+        model_info=ModelInfo(id="dep-quota-0"),
+    )
+
+
+def _patched_params(**fields: object) -> updateDeployment:
+    from litellm.types.router import updateLiteLLMParams
+
+    return updateDeployment(litellm_params=updateLiteLLMParams(**fields))
+
+
+def _params_after(patch: updateDeployment) -> dict[str, object]:
+    from litellm.proxy.management_endpoints.model_management_endpoints import update_db_model
+
+    return json.loads(update_db_model(db_model=_pooled_key(), updated_patch=patch)["litellm_params"])
+
+
+class TestUpdateDBModelClearQuotaParams:
+    """A quota knob an operator set once has to be removable, or two credentials
+    stay welded to one counter with no way back short of deleting the model."""
+
+    @pytest.mark.parametrize(
+        ("field", "stored"),
+        [
+            ("quota_scope_id", "one-shared-account"),
+            ("rpd", 100),
+            ("quota_reset_timezone", "America/Los_Angeles"),
+        ],
+    )
+    def test_an_explicit_null_unsets_the_quota_param(self, field: str, stored: object):
+        assert _pooled_key().litellm_params.model_dump()[field] == stored
+
+        assert field not in _params_after(_patched_params(**{field: None}))
+
+    def test_unsetting_one_quota_param_leaves_the_others_alone(self):
+        params = _params_after(_patched_params(quota_scope_id=None))
+
+        assert params["rpd"] == 100
+        assert params["quota_reset_timezone"] == "America/Los_Angeles"
+        assert params["rpm"] == 5
+
+    def test_a_quota_param_left_out_of_the_patch_keeps_its_stored_value(self):
+        params = _params_after(_patched_params(rpm=8))
+
+        assert params["quota_scope_id"] == "one-shared-account"
+        assert params["rpd"] == 100
+        assert params["rpm"] == 8
+
+    def test_a_quota_clear_does_not_take_the_api_key_with_it(self):
+        """The key is what makes the deployment work, and no quota edit may drop it."""
+        params = _params_after(_patched_params(quota_scope_id=None))
+
+        assert params["api_key"] == "sk-provider-key"
+
+    def test_a_null_that_is_not_a_clearable_field_is_ignored(self):
+        """Only pricing and quota params clear, so a round-tripped blob cannot erase a key."""
+        params = _params_after(_patched_params(api_key=None, api_base=None))
+
+        assert params["api_key"] == "sk-provider-key"

@@ -335,3 +335,45 @@ and why the card says so above the button. One `# mutable-ok` for the messages l
 and one broad `except Exception` with a `noqa`, since every way a provider can fail is a reading here
 rather than a crash
 
+## Phase 10, keeping the refusals and reading the caps out of them: done
+
+`litellm/proxy/spend_tracking/deployment_error_logs.py` writes one row per failed provider attempt,
+`observed_rate_limits.py` reads the caps back out of them, `GET /provider/rate_limit/observed` serves
+that, and the Key Rotation page says it per key next to the cap in force
+
+Phase 9 measures a cap by spending money on purpose. This one gets the same figure for free, off
+traffic already paid for, and keeps getting it as a provider moves a cap under a key. What makes it
+possible is that a rotating pool hides its failures by design: the request a spent key refused is
+retried on another one and the caller sees a success, so the refusal is gone the moment the retry
+lands unless something writes it down
+
+Rows land in `LiteLLM_ErrorLogs`, a table the proxy already reads in three places and has never
+written, so there is no migration and the exception panels that were reading an empty table light up
+as a side effect. `request_kwargs` carries what the table has no column for: whether quota routing
+was enforcing, and how much of each window the refused key had spent. Nothing derived from an api key
+goes in, so a key is identified the way the rest of the quota surface identifies one, by deployment
+id and base url
+
+Two things make that count trustworthy. It is read at the instant of the failure, which
+`litellm.utils` awaits inline before the router retries, so the counter still holds this attempt's own
+increment. And the row records whether enforcement was on, because a count of zero from a pool with
+enforcement off means nothing was counting rather than that the provider refused the first request.
+The write itself is buffered and drained by one debounced task, since that same inline await is on the
+failover path and an insert there would slow every retry the pool makes
+
+The reading is `min(used) - 1`: a refusal recorded at a count of six proves the provider accepted
+five. Many refusals give many bounds and the tightest wins, and the lowest and highest counts are
+both reported, since a spread says the ceiling moves while one repeated number says it is a hard cap.
+Two readings prove nothing and are set aside rather than averaged in, a refusal logged with
+enforcement off and a count of zero from a window that rolled over, and `unmetered_refusals` reports
+how many, which is what tells "every cap is right" apart from "nothing was measuring"
+
+The page judges each window against the cap the router is enforcing now, not the one that was
+configured when the refusal landed, because raising that cap is exactly what the view is read to do.
+A verdict of `nothing_fits` is its own case: the first request of a window was refused, so no
+per-window cap sits under that ceiling and rotation is the only way out
+
+Deliberately not shipped: applying the reading. The page names the gap and an operator still edits
+the cap, for the same reason phase 9's button only fills a field. Nothing prunes the rows either,
+which is a real gap and the follow-up worth doing first
+

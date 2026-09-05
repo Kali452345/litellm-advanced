@@ -1,13 +1,13 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { CircleHelp } from "lucide-react";
 import type { Dayjs } from "dayjs";
 import * as React from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { z } from "zod/v4";
 
 import { TagsInput } from "@/components/shared/TagsInput";
+import { Display, FieldLabel, Hint } from "@/components/shared/form/FieldDisplay";
 import { FormField } from "@/components/shared/form/FormField";
 import { UtcDateTimeInput } from "@/components/shared/form/UtcDateTimeInput";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { UiLoadingSpinner } from "@/components/ui/ui-loading-spinner";
 
 import CacheControlInjectionPoints, {
@@ -27,9 +27,18 @@ import CacheControlInjectionPoints, {
 import type { CredentialItem } from "./networking";
 import NumericalInput from "./shared/numerical_input";
 import type { Tag } from "./tag_management/types";
+import { TemperatureModeFields } from "./TemperatureModeFields";
 import VectorStoreSelector from "./vector_store_management/VectorStoreSelector";
 import { formatPtuUtcDisplay, utcIsoToPickerValue } from "../utils/ptuDatetime";
 import { isMaskedSecret } from "../utils/maskedSecretUtils";
+import {
+  DEFAULT_TEMPERATURE_MODE,
+  pinnedTemperatureError,
+  pinnedTemperatureOf,
+  TEMPERATURE_MODE_FIELD,
+  temperatureModeOf,
+  type TemperatureMode,
+} from "@/lib/temperatureMode";
 import {
   MAX_COST_PER_PTU_PER_HOUR,
   MAX_PTU_COUNT,
@@ -103,6 +112,8 @@ export interface ModelEditFormValues {
   litellm_credential_name?: string;
   litellm_extra_params?: string;
   model_info?: string;
+  temperature_mode?: TemperatureMode;
+  pinned_temperature?: string;
 }
 
 type ModelEditFieldName = keyof ModelEditFormValues;
@@ -139,6 +150,8 @@ const modelEditShape = {
   litellm_credential_name: textish,
   litellm_extra_params: textish,
   model_info: textish,
+  temperature_mode: z.custom<TemperatureMode>().optional(),
+  pinned_temperature: textish,
 };
 
 const isJson = (value: string): boolean => {
@@ -157,6 +170,13 @@ const buildSchema = (ptuEnabled: boolean, isFieldTouched: (field: TouchedPricing
 
     if (values.litellm_extra_params && !isJson(values.litellm_extra_params)) {
       reject("litellm_extra_params", "Please enter valid JSON");
+    }
+
+    if (values.temperature_mode === "pin") {
+      const problem = pinnedTemperatureError(values.pinned_temperature ?? "");
+      if (problem !== null) {
+        reject("pinned_temperature", problem);
+      }
     }
 
     // antd validates only mounted fields, and the PTU block does not render when the flag is off.
@@ -251,6 +271,8 @@ export const toModelEditFormValues = (localModelData: any, isWildcardModel: bool
   // antd never mounted this field for a non-wildcard model, so the key must be absent, not null.
   ...(isWildcardModel ? { health_check_model: localModelData.model_info?.health_check_model } : {}),
   litellm_credential_name: localModelData.litellm_params?.litellm_credential_name || "",
+  temperature_mode: temperatureModeOf(localModelData.litellm_params),
+  pinned_temperature: pinnedTemperatureOf(localModelData.litellm_params),
   litellm_extra_params: JSON.stringify(
     Object.fromEntries(
       Object.entries(localModelData.litellm_params || {}).filter(
@@ -286,30 +308,6 @@ interface ModelInfoEditFormProps {
   credentialsList: CredentialItem[];
   healthCheckModelOptions: { value: string; label: string }[];
 }
-
-const Display: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="mt-1 rounded-sm bg-muted p-2">{children}</div>
-);
-
-const FIELD_LABEL_CLASS = "text-sm font-medium text-foreground";
-
-const FieldLabel: React.FC<{ htmlFor?: string; children: React.ReactNode }> = ({ htmlFor, children }) =>
-  htmlFor === undefined ? (
-    <p className={FIELD_LABEL_CLASS}>{children}</p>
-  ) : (
-    <label htmlFor={htmlFor} className={FIELD_LABEL_CLASS}>
-      {children}
-    </label>
-  );
-
-const Hint: React.FC<{ text: string }> = ({ text }) => (
-  <Tooltip>
-    <TooltipTrigger
-      render={<CircleHelp className="ml-1 inline size-3.5 shrink-0 cursor-help text-muted-foreground" />}
-    />
-    <TooltipContent className="max-w-xs">{text}</TooltipContent>
-  </Tooltip>
-);
 
 const DocsHint: React.FC<{ text: string; href: string }> = ({ text, href }) => (
   <a href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>
@@ -371,6 +369,8 @@ const ModelInfoEditForm: React.FC<ModelInfoEditFormProps> = ({
     resolver,
     defaultValues: toModelEditFormValues(localModelData, isWildcardModel),
   });
+
+  const temperatureMode = form.watch(TEMPERATURE_MODE_FIELD) ?? DEFAULT_TEMPERATURE_MODE;
 
   const submit = (event: React.FormEvent<HTMLFormElement>) =>
     form.handleSubmit(async (values) => {
@@ -769,6 +769,13 @@ const ModelInfoEditForm: React.FC<ModelInfoEditFormProps> = ({
                 </Display>
               )}
             </div>
+
+            <TemperatureModeFields
+              control={form.control}
+              mode={temperatureMode}
+              isEditing={isEditing}
+              stored={localModelData.litellm_params}
+            />
 
             <div>
               <FieldLabel>

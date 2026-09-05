@@ -98,8 +98,8 @@ from litellm.types.proxy.management_endpoints.model_management_endpoints import 
     UpdateUsefulLinksRequest,
 )
 from litellm.types.router import (
-    QUOTA_PARAM_NAMES,
     SPECIAL_MODEL_INFO_PARAMS,
+    UNSETTABLE_LITELLM_PARAM_NAMES,
     Deployment,
     GenericLiteLLMParams,
     LiteLLM_Params,
@@ -630,12 +630,13 @@ def update_db_model(db_model: Deployment, updated_patch: updateDeployment) -> Pr
     #
     # QUOTA_PARAM_NAMES live in litellm_params alone, so their clear pops from there
     # only. Without it a scope an operator set once can never be unset, which leaves
-    # two credentials permanently sharing one counter.
+    # two credentials permanently sharing one counter. The pinned/dropped param lists
+    # are unset the same way, so turning a temperature pin back off actually takes.
     if updated_patch.litellm_params:
         for field in _explicitly_cleared(updated_patch.litellm_params, SPECIAL_MODEL_INFO_PARAMS):
             merged_litellm_params.pop(field, None)
             merged_model_info.pop(field, None)
-        for field in _explicitly_cleared(updated_patch.litellm_params, QUOTA_PARAM_NAMES):
+        for field in _explicitly_cleared(updated_patch.litellm_params, UNSETTABLE_LITELLM_PARAM_NAMES):
             merged_litellm_params.pop(field, None)
     if updated_patch.model_info:
         for field in _explicitly_cleared(updated_patch.model_info, SPECIAL_MODEL_INFO_PARAMS):

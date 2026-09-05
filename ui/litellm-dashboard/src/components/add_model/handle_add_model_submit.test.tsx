@@ -162,3 +162,98 @@ describe("prepareModelAddRequest", () => {
     expect(deployment.litellmParamsObj.timeout).toBe(5);
   });
 });
+
+describe("prepareModelAddRequest temperature override", () => {
+  const paramsFor = async (formValues: Record<string, unknown>) => {
+    const deployments = await prepareModelAddRequest(
+      {
+        model_mappings: [{ public_name: "Public Model", litellm_model: "litellm/public" }],
+        ...formValues,
+      },
+      "token",
+      null,
+    );
+    return deployments![0].litellmParamsObj;
+  };
+
+  it("pins the temperature the operator typed, so a hardcoded one never reaches the provider", async () => {
+    expect(await paramsFor({ temperature_mode: "pin", pinned_temperature: "0.3" })).toMatchObject({
+      pinned_params: { temperature: 0.3 },
+    });
+  });
+
+  it("pins a zero, which is what a deterministic deployment needs", async () => {
+    expect((await paramsFor({ temperature_mode: "pin", pinned_temperature: "0" })).pinned_params).toEqual({
+      temperature: 0,
+    });
+  });
+
+  it("drops the param for a provider that rejects it outright", async () => {
+    expect((await paramsFor({ temperature_mode: "drop" })).additional_drop_params).toEqual(["temperature"]);
+  });
+
+  it("sends neither override when the caller's value should go through", async () => {
+    const params = await paramsFor({ temperature_mode: "passthrough", pinned_temperature: "0.3" });
+    expect("pinned_params" in params).toBe(false);
+    expect("additional_drop_params" in params).toBe(false);
+  });
+
+  it("leaves the overrides out when the form never showed the control", async () => {
+    const params = await paramsFor({ model_name: "custom-model-name" });
+    expect("pinned_params" in params).toBe(false);
+    expect("additional_drop_params" in params).toBe(false);
+  });
+
+  it("never sends the form's own control fields as litellm params", async () => {
+    const params = await paramsFor({ temperature_mode: "pin", pinned_temperature: "0.3" });
+    expect("temperature_mode" in params).toBe(false);
+    expect("pinned_temperature" in params).toBe(false);
+  });
+
+  it("keeps params pinned or dropped through the raw params box", async () => {
+    expect(
+      await paramsFor({
+        temperature_mode: "pin",
+        pinned_temperature: "0.3",
+        litellm_extra_params: JSON.stringify({
+          pinned_params: { top_p: 0.1, temperature: 1 },
+          additional_drop_params: ["seed"],
+        }),
+      }),
+    ).toMatchObject({
+      pinned_params: { top_p: 0.1, temperature: 0.3 },
+      additional_drop_params: ["seed"],
+    });
+  });
+
+  it("wins over a temperature pin typed into the raw params box", async () => {
+    expect(
+      (
+        await paramsFor({
+          temperature_mode: "drop",
+          litellm_extra_params: JSON.stringify({ pinned_params: { temperature: 1 } }),
+        })
+      ).pinned_params,
+    ).toBeUndefined();
+  });
+
+  it("carries the override onto every model one key serves", async () => {
+    const deployments = await prepareModelAddRequest(
+      {
+        model_mappings: [
+          { public_name: "flash", litellm_model: "gemini/gemini-2.5-flash" },
+          { public_name: "pro", litellm_model: "gemini/gemini-2.5-pro" },
+        ],
+        temperature_mode: "pin",
+        pinned_temperature: "0.3",
+      },
+      "token",
+      null,
+    );
+
+    expect(deployments!.map((deployment) => deployment.litellmParamsObj.pinned_params)).toEqual([
+      { temperature: 0.3 },
+      { temperature: 0.3 },
+    ]);
+  });
+});

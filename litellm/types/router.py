@@ -39,6 +39,8 @@ CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = list[str | ConfigurableClientsideParamsCus
 # so which models share a credential's counters is configurable.
 QuotaScopeMode: TypeAlias = Literal["credential", "credential_model"]
 
+PinnedParamValue: TypeAlias = bool | int | float | str
+
 
 class ModelConfig(BaseModel):
     model_name: str
@@ -306,6 +308,11 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
     quota_reset_timezone: str | None = None
     quota_scope: QuotaScopeMode | None = None
     quota_scope_id: str | None = None
+    # Every other param here is a default the caller's request overrides. These
+    # replace what the caller sent, for providers that reject a value the client
+    # hardcodes. `additional_drop_params` removes a param outright instead.
+    pinned_params: Mapping[str, PinnedParamValue] | None = None
+    additional_drop_params: list[str] | None = None  # mutable-ok: `_should_drop_param` needs a real `list`
     timeout: float | str | httpx.Timeout | None = None  # if str, pass in as os.environ/
     stream_timeout: float | str | None = None  # timeout when making stream=True calls, if str, pass in as os.environ/
     max_retries: int | None = None
@@ -478,6 +485,9 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     )
     ## DROP PARAMS ##
     drop_params: bool | None
+    additional_drop_params: ReadOnly[list[str] | None]  # mutable-ok: `_should_drop_param` needs a real `list`
+    ## PINNED PARAMS ##
+    pinned_params: ReadOnly[Mapping[str, PinnedParamValue] | None]
     ## RESPONSES API → CHAT COMPLETIONS BRIDGE ##
     use_chat_completions_api: bool | None
     ## PASS-THROUGH ENDPOINTS ##
@@ -536,6 +546,11 @@ class DeploymentTypedDict(TypedDict, total=False):
 SPECIAL_MODEL_INFO_PARAMS = tuple(MirroredPricingParams.model_fields)
 
 QUOTA_PARAM_NAMES: Final = ("rpd", "quota_scope", "quota_scope_id", "quota_reset_timezone")
+
+# Operator-set params living in `litellm_params` alone, which a patch must be able to
+# take back off. `update_db_model` merges a patch with `exclude_none=True`, so a null
+# is dropped rather than merged, and a value set once would otherwise be permanent.
+UNSETTABLE_LITELLM_PARAM_NAMES: Final = (*QUOTA_PARAM_NAMES, "pinned_params", "additional_drop_params")
 
 
 class Deployment(BaseModel):

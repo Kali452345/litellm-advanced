@@ -43,6 +43,7 @@ import {
 import { Logo } from "@/components/molecules/logo/Logo";
 import UpdateModelCredentialsModal from "./update_model_credentials_modal";
 import ModelInfoEditForm, { type ModelEditFormValues, type TouchedPricingField } from "./ModelInfoEditForm";
+import { DEFAULT_TEMPERATURE_MODE, withTemperatureOverride } from "@/lib/temperatureMode";
 import { Tag } from "./tag_management/types";
 import { getDisplayModelName } from "./view_model/model_name_display";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -399,6 +400,14 @@ export default function ModelInfoView({
       } else {
         delete updatedLitellmParams.cache_control_injection_points;
       }
+
+      // Last, so it wins over the raw params box while still keeping any other param pinned or
+      // dropped there.
+      updatedLitellmParams = withTemperatureOverride(
+        updatedLitellmParams,
+        values.temperature_mode ?? DEFAULT_TEMPERATURE_MODE,
+        values.pinned_temperature ?? "",
+      );
 
       // Parse the model_info from the form values
       let updatedModelInfo;

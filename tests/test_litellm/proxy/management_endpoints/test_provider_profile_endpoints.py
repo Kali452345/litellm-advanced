@@ -144,6 +144,72 @@ def test_a_cap_is_read_from_wherever_the_deployment_carries_it():
     assert _model_of([model_info_only], "gemini", "pro").rpd == 250
 
 
+def test_profile_reports_the_param_overrides_its_keys_agree_on():
+    model_list = [
+        _entry("flash", "gemini/gemini-2.5-flash", "k1", pinned_params={"temperature": 0.3}),
+        _entry("flash", "gemini/gemini-2.5-flash", "k2", pinned_params={"temperature": 0.3}),
+        _entry("pro", "gemini/gemini-2.5-pro", "k1", additional_drop_params=["temperature"]),
+        _entry("pro", "gemini/gemini-2.5-pro", "k2", additional_drop_params=["temperature"]),
+    ]
+
+    flash = _model_of(model_list, "gemini", "flash")
+    pro = _model_of(model_list, "gemini", "pro")
+
+    assert flash.pinned_params == {"temperature": 0.3}
+    assert flash.additional_drop_params is None
+    assert pro.additional_drop_params == ("temperature",)
+    assert pro.pinned_params is None
+
+
+def test_the_same_overrides_written_in_a_different_order_still_agree():
+    model_list = [
+        _entry(
+            "flash",
+            "gemini/gemini-2.5-flash",
+            "k1",
+            pinned_params={"temperature": 0.3, "top_p": 0.1},
+            additional_drop_params=["temperature", "seed"],
+        ),
+        _entry(
+            "flash",
+            "gemini/gemini-2.5-flash",
+            "k2",
+            pinned_params={"top_p": 0.1, "temperature": 0.3},
+            additional_drop_params=["seed", "temperature"],
+        ),
+    ]
+
+    flash = _model_of(model_list, "gemini", "flash")
+
+    assert flash.pinned_params == {"temperature": 0.3, "top_p": 0.1}
+    assert flash.additional_drop_params == ("seed", "temperature")
+
+
+def test_an_override_only_some_keys_carry_is_not_reported_as_the_models():
+    model_list = [
+        _entry("flash", "gemini/gemini-2.5-flash", "k1", pinned_params={"temperature": 0.3}),
+        _entry("flash", "gemini/gemini-2.5-flash", "k2", pinned_params={"temperature": 1}),
+        _entry("pro", "gemini/gemini-2.5-pro", "k1", additional_drop_params=["temperature"]),
+        _entry("pro", "gemini/gemini-2.5-pro", "k2"),
+    ]
+
+    assert _model_of(model_list, "gemini", "flash").pinned_params is None
+    assert _model_of(model_list, "gemini", "pro").additional_drop_params is None
+
+
+def test_a_model_with_no_override_reports_none_rather_than_an_empty_one():
+    """An empty container and a missing one are the same absence, so they have to agree."""
+    model_list = [
+        _entry("flash", "gemini/gemini-2.5-flash", "k1", pinned_params={}, additional_drop_params=[]),
+        _entry("flash", "gemini/gemini-2.5-flash", "k2"),
+    ]
+
+    flash = _model_of(model_list, "gemini", "flash")
+
+    assert flash.pinned_params is None
+    assert flash.additional_drop_params is None
+
+
 def _plan(model_list: list[dict[str, object]], **request: object) -> ProviderKeyPlan:
     planned = plan_provider_key(AddProviderKeyRequest.model_validate(request), model_list)
     assert isinstance(planned, ProviderKeyPlan)
@@ -189,6 +255,41 @@ def test_the_caps_come_from_the_provider_unless_the_request_gives_its_own():
     assert (_planned(copied, "flash").litellm_params.rpm, _planned(copied, "flash").litellm_params.rpd) == (5, 100)
     assert (_planned(copied, "pro").litellm_params.rpm, _planned(copied, "pro").litellm_params.rpd) == (2, None)
     assert (_planned(overridden, "pro").litellm_params.rpm, _planned(overridden, "pro").litellm_params.rpd) == (1, 20)
+
+
+def test_a_new_key_takes_over_the_param_overrides_of_every_model_it_serves():
+    """A key that forwarded a param the model rejects would fail every request that failed over to it."""
+    pool = [
+        _entry("flash", "gemini/gemini-2.5-flash", "k1", pinned_params={"temperature": 0.3}),
+        _entry("pro", "gemini/gemini-2.5-pro", "k1", additional_drop_params=["temperature"]),
+    ]
+
+    plan = _plan(pool, provider="gemini", api_key="k2")
+
+    assert _planned(plan, "flash").litellm_params.pinned_params == {"temperature": 0.3}
+    assert _planned(plan, "flash").litellm_params.additional_drop_params is None
+    assert _planned(plan, "pro").litellm_params.additional_drop_params == ["temperature"]
+    assert _planned(plan, "pro").litellm_params.pinned_params is None
+
+
+def test_an_override_the_provider_keys_disagree_on_is_not_inherited():
+    pool = [
+        _entry("flash", "gemini/gemini-2.5-flash", "k1", pinned_params={"temperature": 0.3}),
+        _entry("flash", "gemini/gemini-2.5-flash", "k2", pinned_params={"temperature": 1}),
+    ]
+
+    plan = _plan(pool, provider="gemini", api_key="k3")
+
+    assert _planned(plan, "flash").litellm_params.pinned_params is None
+
+
+def test_an_inherited_override_reaches_the_deployment_in_the_shape_litellm_reads():
+    """`_should_drop_param` checks `isinstance(..., list)`, so a tuple would silently drop nothing."""
+    pool = [_entry("flash", "gemini/gemini-2.5-flash", "k1", additional_drop_params=["temperature"])]
+
+    params = _planned(_plan(pool, provider="gemini", api_key="k2"), "flash").litellm_params
+
+    assert isinstance(params.additional_drop_params, list)
 
 
 def _counted_window(deployment: Deployment) -> str:

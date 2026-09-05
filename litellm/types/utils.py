@@ -3604,6 +3604,8 @@ all_litellm_params = (
         "quota_reset_timezone",
         "quota_scope",
         "quota_scope_id",
+        "pinned_params",
+        "_litellm_pinned_params_restore",
         "max_parallel_requests",
         "input_cost_per_token",
         "output_cost_per_token",

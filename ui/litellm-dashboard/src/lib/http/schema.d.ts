@@ -29081,6 +29081,8 @@ export interface components {
             } | null;
             /** Adaptive Router Default Model */
             adaptive_router_default_model?: string | null;
+            /** Additional Drop Params */
+            additional_drop_params?: string[] | null;
             /**
              * Allow Client Keepalive Override
              * @default false
@@ -29355,6 +29357,10 @@ export interface components {
             output_cost_per_video_token?: number | null;
             /** Output Vector Size */
             output_vector_size?: number | null;
+            /** Pinned Params */
+            pinned_params?: {
+                [key: string]: boolean | number | string;
+            } | null;
             /** Quality Router Config */
             quality_router_config?: {
                 [key: string]: unknown;
@@ -34189,6 +34195,11 @@ export interface components {
         /** ProviderProfileModel */
         ProviderProfileModel: {
             /**
+             * Additional Drop Params
+             * @description Params never forwarded to this model, for a provider that rejects them outright. Null when the keys disagree
+             */
+            additional_drop_params?: string[] | null;
+            /**
              * Litellm Model
              * @description The model string the provider itself is sent
              */
@@ -34198,6 +34209,13 @@ export interface components {
              * @description The name callers ask for, shared by every key behind this provider
              */
             model_name: string;
+            /**
+             * Pinned Params
+             * @description Params this model is sent regardless of what the caller asked for, for a provider that rejects a value clients hardcode. Null when the keys disagree
+             */
+            pinned_params?: {
+                [key: string]: boolean | number | string;
+            } | null;
             /**
              * Rpd
              * @description Requests per day one key gets, null when the keys disagree
@@ -39193,6 +39211,8 @@ export interface components {
             } | null;
             /** Adaptive Router Default Model */
             adaptive_router_default_model?: string | null;
+            /** Additional Drop Params */
+            additional_drop_params?: string[] | null;
             /**
              * Allow Client Keepalive Override
              * @default false
@@ -39467,6 +39487,10 @@ export interface components {
             output_cost_per_video_token?: number | null;
             /** Output Vector Size */
             output_vector_size?: number | null;
+            /** Pinned Params */
+            pinned_params?: {
+                [key: string]: boolean | number | string;
+            } | null;
             /** Quality Router Config */
             quality_router_config?: {
                 [key: string]: unknown;

@@ -155,6 +155,7 @@ from litellm.router_utils.handle_error import (
     send_llm_exception_alert,
 )
 from litellm.router_utils.health_state_cache import DeploymentHealthCache
+from litellm.router_utils.pinned_params import pin_deployment_params
 from litellm.router_utils.pre_call_checks.deployment_affinity_check import (
     DeploymentAffinityCheck,
     warn_on_unknown_model_group_affinity_flags,
@@ -3548,6 +3549,7 @@ class Router:
             deployment=deployment, forwarded_keys=kwargs.pop(_ALIAS_MARKER_FORWARDED_PARAMS_KWARG, ())
         ):
             kwargs.pop(key, None)
+        pin_deployment_params(deployment=deployment, kwargs=kwargs)
         self._merge_tools_from_deployment(deployment=deployment, kwargs=kwargs)
 
         model_info = deployment.get("model_info", {}).copy()

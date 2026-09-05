@@ -4732,3 +4732,68 @@ class TestUpdateDBModelClearQuotaParams:
         params = _params_after(_patched_params(api_key=None, api_base=None))
 
         assert params["api_key"] == "sk-provider-key"
+
+
+def _temperature_pinned_key() -> Deployment:
+    """A deployment whose provider refuses the temperature its callers hardcode."""
+    from litellm.types.router import ModelInfo
+
+    return Deployment(
+        model_name="flash-pool",
+        litellm_params=LiteLLM_Params(
+            model="openai/qwen-flash",
+            api_key="sk-provider-key",
+            pinned_params={"temperature": 0.3},
+            additional_drop_params=["top_p"],
+        ),
+        model_info=ModelInfo(id="dep-pinned-0"),
+    )
+
+
+def _pinned_params_after(patch: updateDeployment) -> dict:
+    from litellm.proxy.management_endpoints.model_management_endpoints import update_db_model
+
+    return json.loads(update_db_model(db_model=_temperature_pinned_key(), updated_patch=patch)["litellm_params"])
+
+
+class TestUpdateDBModelClearParamOverrides:
+    """Switching a param back to passing the caller's value through has to actually take,
+    or the form can set an override and never take it off again."""
+
+    @pytest.mark.parametrize(
+        ("field", "stored"),
+        [("pinned_params", {"temperature": 0.3}), ("additional_drop_params", ["top_p"])],
+    )
+    def test_an_explicit_null_unsets_the_override(self, field: str, stored: object):
+        assert _temperature_pinned_key().litellm_params.model_dump()[field] == stored
+
+        assert field not in _pinned_params_after(_patched_params(**{field: None}))
+
+    def test_unsetting_the_pin_leaves_the_drop_list_alone(self):
+        params = _pinned_params_after(_patched_params(pinned_params=None))
+
+        assert params["additional_drop_params"] == ["top_p"]
+
+    def test_unsetting_the_drop_list_leaves_the_pin_alone(self):
+        params = _pinned_params_after(_patched_params(additional_drop_params=None))
+
+        assert params["pinned_params"] == {"temperature": 0.3}
+
+    def test_clearing_an_override_does_not_take_the_api_key_with_it(self):
+        params = _pinned_params_after(_patched_params(pinned_params=None, additional_drop_params=None))
+
+        assert params["api_key"] == "sk-provider-key"
+
+    def test_a_new_pin_replaces_the_stored_one(self):
+        """The form always sends the whole map, so a param dropped from it is dropped
+        from the deployment rather than merged key by key with what was there."""
+        params = _pinned_params_after(_patched_params(pinned_params={"temperature": 1.0}))
+
+        assert params["pinned_params"] == {"temperature": 1.0}
+
+    def test_a_pin_is_stored_as_written_rather_than_encrypted(self):
+        """`_encrypted_for_storage` only reaches string values, and a pin the router
+        cannot read back is a pin that silently stops applying."""
+        params = _pinned_params_after(_patched_params(pinned_params={"reasoning_effort": "low"}))
+
+        assert params["pinned_params"] == {"reasoning_effort": "low"}

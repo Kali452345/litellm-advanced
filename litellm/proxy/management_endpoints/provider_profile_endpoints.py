@@ -21,6 +21,7 @@ from whichever deployment happened to be first.
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from types import MappingProxyType
 from typing import Annotated, Final, Never, TypeAlias, TypeVar, assert_never
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -37,7 +38,7 @@ from litellm.proxy._types import (
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.router_utils.quota import resolve_quota_scope
-from litellm.types.router import Deployment, LiteLLM_Params, QuotaScopeMode
+from litellm.types.router import Deployment, LiteLLM_Params, PinnedParamValue, QuotaScopeMode
 
 router: Final = APIRouter(tags=["provider profile management"])  # mutable-ok: fastapi types tags as list
 
@@ -53,6 +54,16 @@ class ProviderProfileModel(BaseModel):
     litellm_model: str = Field(description="The model string the provider itself is sent")
     rpm: int | None = Field(default=None, description="Requests per minute one key gets, null when the keys disagree")
     rpd: int | None = Field(default=None, description="Requests per day one key gets, null when the keys disagree")
+    pinned_params: Mapping[str, PinnedParamValue] | None = Field(
+        default=None,
+        description="Params this model is sent regardless of what the caller asked for, for a provider that rejects "
+        "a value clients hardcode. Null when the keys disagree",
+    )
+    additional_drop_params: tuple[str, ...] | None = Field(
+        default=None,
+        description="Params never forwarded to this model, for a provider that rejects them outright. Null when the "
+        "keys disagree",
+    )
 
 
 class ProviderProfile(BaseModel):
@@ -176,6 +187,8 @@ class _ProviderParams(BaseModel):
     quota_scope: QuotaScopeMode | None = None
     quota_scope_id: str | None = None
     quota_reset_timezone: str | None = None
+    pinned_params: Mapping[str, PinnedParamValue] | None = None
+    additional_drop_params: tuple[str, ...] | None = None
 
 
 class _ProviderModelInfo(BaseModel):
@@ -266,6 +279,8 @@ def _profile_model(
         litellm_model=litellm_model,
         rpm=_unanimous(member.rpm for member in serving),
         rpd=_unanimous(member.rpd for member in serving),
+        pinned_params=_unanimous_pins(serving),
+        additional_drop_params=_unanimous(_dropped(member.params) for member in serving),
     )
 
 
@@ -337,6 +352,27 @@ def _unanimous_quota_scope(members: Sequence[_ProviderDeployment]) -> QuotaScope
     return _unanimous(scopes)
 
 
+def _unanimous_pins(members: Sequence[_ProviderDeployment]) -> Mapping[str, PinnedParamValue] | None:
+    agreed: Final = _unanimous(_pinned(member.params) for member in members)
+    return MappingProxyType(dict(agreed)) if agreed else None
+
+
+def _pinned(params: _ProviderParams) -> tuple[tuple[str, PinnedParamValue], ...]:
+    """The pins in a fixed order, so two deployments pinning the same values agree on them."""
+    pins: Final = params.pinned_params
+    return tuple(sorted(pins.items())) if pins else ()
+
+
+def _dropped(params: _ProviderParams) -> tuple[str, ...] | None:
+    """The dropped params in a fixed order, since dropping is membership and order means nothing."""
+    drops: Final = params.additional_drop_params
+    return tuple(sorted(drops)) if drops else None
+
+
+def _drop_list(drops: tuple[str, ...] | None) -> list[str] | None:  # mutable-ok: `_should_drop_param` needs a `list`
+    return list(drops) if drops else None  # mutable-ok: a tuple would silently drop nothing
+
+
 def _first_set(*values: int | None) -> int | None:
     return next((value for value in values if value is not None), None)
 
@@ -359,6 +395,11 @@ def plan_provider_key(
     `quota_scope` is copied unless the request names one, since whether a key's caps
     count per model or once across all of them is a fact about the provider's metering
     rather than about the key.
+
+    `pinned_params` and `additional_drop_params` are copied per model, since a model
+    rejecting a param rejects it whichever key sent it. Without the copy a new key would
+    be the one deployment in the pool that forwards it, and the request that failed over
+    to that key would get the provider error the override exists to prevent.
     """
     parsed: Final = _parse_deployments(model_list)
     provider: Final = request.provider.strip().lower()
@@ -414,6 +455,8 @@ def _planned_deployments(
                 rpd=_first_set(request.rpd, entry.rpd),
                 quota_scope=quota_scope,
                 quota_reset_timezone=quota_reset_timezone,
+                pinned_params=entry.pinned_params,
+                additional_drop_params=_drop_list(entry.additional_drop_params),
             ),
         )
         for entry in entries

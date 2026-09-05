@@ -125,4 +125,20 @@ describe("AdvancedSettings", () => {
     });
     expect(perModel).not.toBeChecked();
   });
+
+  it("asks for a temperature to send only once the operator chooses to pin one", async () => {
+    const { getByText, findByRole, findByLabelText, findByText, queryByLabelText } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    const pin = await findByRole("radio", { name: /Always send this value/ });
+    expect(queryByLabelText("Temperature To Send Instead")).not.toBeInTheDocument();
+
+    fireEvent.click(pin);
+
+    fireEvent.change(await findByLabelText("Temperature To Send Instead"), { target: { value: "9" } });
+
+    expect(await findByText("Enter a temperature between 0 and 2")).toBeInTheDocument();
+  });
 });

@@ -2,6 +2,28 @@ import { toast } from "@/lib/toast";
 import { Model, modelCreateCall } from "../networking";
 import { provider_map } from "../provider_info_helpers";
 import { ptuPickerToUtcIso } from "../../utils/ptuDatetime";
+import {
+  DEFAULT_TEMPERATURE_MODE,
+  PINNED_TEMPERATURE_FIELD,
+  TEMPERATURE_MODE_FIELD,
+  temperatureOverrideParams,
+  type TemperatureMode,
+} from "@/lib/temperatureMode";
+
+const applyTemperatureOverride = (formValues: Record<string, any>, litellmParamsObj: Record<string, any>): void => {
+  const overrides = temperatureOverrideParams(
+    (formValues[TEMPERATURE_MODE_FIELD] as TemperatureMode | undefined) ?? DEFAULT_TEMPERATURE_MODE,
+    String(formValues[PINNED_TEMPERATURE_FIELD] ?? ""),
+    litellmParamsObj,
+  );
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === null) {
+      delete litellmParamsObj[key];
+    } else {
+      litellmParamsObj[key] = value;
+    }
+  }
+};
 
 export const prepareModelAddRequest = async (formValues: Record<string, any>, accessToken: string, form: any) => {
   try {
@@ -93,6 +115,9 @@ export const prepareModelAddRequest = async (formValues: Record<string, any>, ac
         }
         // Skip the custom_pricing and pricing_model fields as they're only used for UI control
         if (key === "custom_pricing" || key === "pricing_model" || key === "cache_control") {
+          continue;
+        }
+        if (key === TEMPERATURE_MODE_FIELD || key === PINNED_TEMPERATURE_FIELD) {
           continue;
         }
         if (key == "model_name") {
@@ -195,6 +220,8 @@ export const prepareModelAddRequest = async (formValues: Record<string, any>, ac
           litellmParamsObj[key] = value;
         }
       }
+
+      applyTemperatureOverride(formValues, litellmParamsObj);
 
       deployments.push({ litellmParamsObj, modelInfoObj, modelName });
     }

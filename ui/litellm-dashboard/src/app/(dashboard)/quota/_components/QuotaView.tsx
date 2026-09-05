@@ -1,9 +1,20 @@
 "use client";
 
 import { Gauge } from "lucide-react";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
-import { toOverview, toPoolViews, type PoolView } from "@/app/(dashboard)/hooks/quotaUsage/quotaSummary";
+import {
+  observedByKey,
+  observedHint,
+  toObservedKeyView,
+  toObservedOverview,
+  type ObservedKeyView,
+} from "@/app/(dashboard)/hooks/observedRateLimits/observedLimits";
+import {
+  OBSERVED_LOOKBACK_HOURS,
+  useObservedRateLimits,
+} from "@/app/(dashboard)/hooks/observedRateLimits/useObservedRateLimits";
+import { toOverview, toPoolViews, type KeyView, type PoolView } from "@/app/(dashboard)/hooks/quotaUsage/quotaSummary";
 import { useQuotaUsage } from "@/app/(dashboard)/hooks/quotaUsage/useQuotaUsage";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { AdminOnlyNotice } from "@/components/shared/AdminOnlyNotice";
@@ -17,12 +28,18 @@ import { all_admin_roles } from "@/utils/roles";
 import { QuotaEnforcementCard } from "./QuotaEnforcementCard";
 import { QuotaPoolCard } from "./QuotaPoolCard";
 
-function PoolList({ pools, isLoading }: { pools: readonly PoolView[]; isLoading: boolean }) {
+interface PoolListProps {
+  pools: readonly PoolView[];
+  isLoading: boolean;
+  observedFor: (keyView: KeyView) => ObservedKeyView | null;
+}
+
+function PoolList({ pools, isLoading, observedFor }: PoolListProps) {
   if (pools.length > 0) {
     return (
       <>
         {pools.map((pool) => (
-          <QuotaPoolCard key={pool.modelName} pool={pool} />
+          <QuotaPoolCard key={pool.modelName} pool={pool} observedFor={observedFor} />
         ))}
       </>
     );
@@ -55,6 +72,24 @@ export function QuotaView() {
   const pools = useMemo(() => toPoolViews(data), [data]);
   const overview = useMemo(() => toOverview(data, pools), [data, pools]);
 
+  const { data: observed } = useObservedRateLimits();
+  const observedKeys = useMemo(() => observedByKey(observed), [observed]);
+  const observedOverview = useMemo(
+    () =>
+      toObservedOverview(
+        observed,
+        pools.flatMap((pool) => pool.keys),
+      ),
+    [observed, pools],
+  );
+  const observedFor = useCallback(
+    (keyView: KeyView) => {
+      const limits = observedKeys.get(keyView.modelId);
+      return limits ? toObservedKeyView(limits, keyView, new Date()) : null;
+    },
+    [observedKeys],
+  );
+
   if (!isAdmin) return <AdminOnlyNotice pageTitle="Key Rotation" />;
 
   return (
@@ -73,7 +108,7 @@ export function QuotaView() {
         }
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <SummaryCard
           label="Pools"
           value={String(overview.poolCount)}
@@ -97,11 +132,17 @@ export function QuotaView() {
           hint="Used without a quota check"
           info="A key with no rpm or rpd limit set is never held back, so the provider's own rate limit is the only thing stopping it."
         />
+        <SummaryCard
+          label="Caps set too high"
+          value={String(observedOverview.capsTooHigh)}
+          hint={observedHint(observedOverview, OBSERVED_LOOKBACK_HOURS)}
+          info="A provider that refuses a key before its own cap is reached proves the cap is above what that key really allows. This is measured from refusals the proxy logged, so it only counts while quota routing is enforcing."
+        />
       </div>
 
       <QuotaEnforcementCard live={{ enforced: overview.enforced, maxWaitSeconds: overview.maxWaitSeconds }} />
 
-      <PoolList pools={pools} isLoading={isLoading} />
+      <PoolList pools={pools} isLoading={isLoading} observedFor={observedFor} />
     </div>
   );
 }

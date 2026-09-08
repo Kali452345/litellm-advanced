@@ -7831,6 +7831,90 @@ def convert_list_message_to_dict(messages: Sequence):
     return new_messages
 
 
+_LONE_SURROGATE_RE: Final = re.compile("[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]")
+
+
+def _sanitize_lone_surrogates(text: str) -> str:
+    """Replace lone surrogates, which no UTF-8 wire body can carry.
+
+    Terminal output and file reads can smuggle lone surrogates into tool results.
+    Serializing them emits lone-surrogate escapes, which strict provider gateways
+    reject while parsing the body. Well-formed pairs pass through untouched; only
+    unpaired surrogates become the replacement character.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _LONE_SURROGATE_RE.sub("\ufffd", text)
+    return text
+
+
+def _flatten_text_content_parts(parts: list[object]) -> str | None:
+    """Join all-text content parts, or None when any part is not text.
+
+    Strict OpenAI-compatible backends check that tool and assistant content is a
+    string and reject list envelopes. Joining preserves every character while
+    satisfying that check. A part that is not text (images, references) keeps the
+    message untouched rather than half-converted.
+    """
+    texts: Final = [part for part in (_text_of_part(part) for part in parts) if part is not None]
+    if len(texts) != len(parts):
+        return None
+    return "\n".join(text for text in texts if text != "")
+
+
+def _text_of_part(part: object) -> str | None:
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+        return cast(str, part.get("text"))
+    return None
+
+
+def _normalize_message_content(message: AllMessageValues) -> AllMessageValues:
+    """Normalize one message's content envelope without touching its meaning.
+
+    Tool and assistant lists become strings when every part is text, user lists
+    keep multimodal parts but lose empty text, and every string is cleared of
+    lone surrogates. Messages are rebuilt, never edited in place, and no message
+    is ever dropped, so tool pairing and turn structure survive intact.
+    """
+    content: Final = message.get("content")
+    if isinstance(content, str):
+        sanitized: Final = _sanitize_lone_surrogates(content)
+        return message if sanitized == content else cast(AllMessageValues, {**message, "content": sanitized})
+    if not isinstance(content, list):
+        return message
+    role: Final = message.get("role")
+    if role in ("tool", "assistant"):
+        flattened: Final = _flatten_text_content_parts(content)
+        if flattened is None:
+            return message
+        return cast(AllMessageValues, {**message, "content": _sanitize_lone_surrogates(flattened)})
+    if role == "user":
+        kept: Final = tuple(_sanitized_part(part) for part in content if not _is_empty_text_part(part))
+        collapsed: Final[str | list[object]] = "" if not kept else list(kept)
+        return message if collapsed == content else cast(AllMessageValues, {**message, "content": collapsed})
+    return message
+
+
+def _is_empty_text_part(part: object) -> bool:
+    if isinstance(part, str):
+        return part == ""
+    return isinstance(part, dict) and part.get("type") == "text" and part.get("text") == ""
+
+
+def _sanitized_part(part: object) -> object:
+    if isinstance(part, str):
+        return _sanitize_lone_surrogates(part)
+    if isinstance(part, dict):
+        text: Final = part.get("type") == "text" and part.get("text")
+        if isinstance(text, str):
+            sanitized: Final = _sanitize_lone_surrogates(text)
+            return part if sanitized == text else {**part, "text": sanitized}
+    return part
+
+
 def validate_and_fix_openai_messages(messages: list):
     """
     Ensures all messages are valid OpenAI chat completion messages.
@@ -7846,7 +7930,7 @@ def validate_and_fix_openai_messages(messages: list):
 
         convert_msg_to_dict = cast(AllMessageValues, convert_to_dict(message))
         cleaned_message = cleanup_none_field_in_message(message=convert_msg_to_dict)
-        new_messages.append(cleaned_message)
+        new_messages.append(_normalize_message_content(cleaned_message))
     return validate_chat_completion_user_messages(messages=new_messages)
 
 

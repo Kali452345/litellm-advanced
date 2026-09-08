@@ -3904,6 +3904,94 @@ class TestValidateAndFixThinkingParam:
         assert validate_and_fix_thinking_param(thinking=False) is None
 
 
+class TestValidateAndFixOpenaiMessages:
+    """Tests for the strict-provider normalization in validate_and_fix_openai_messages."""
+
+    def test_tool_list_content_flattens_to_string(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        messages = [
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "1", "content": [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}]},
+        ]
+        result = validate_and_fix_openai_messages(messages=messages)
+        assert result[1]["content"] == "first\nsecond"
+
+    def test_assistant_list_content_flattens_to_string(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        messages = [{"role": "assistant", "content": [{"type": "text", "text": "a"}, "b"]}]
+        result = validate_and_fix_openai_messages(messages=messages)
+        assert result[0]["content"] == "a\nb"
+
+    def test_user_multimodal_list_untouched(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        content = [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]
+        result = validate_and_fix_openai_messages(messages=[{"role": "user", "content": content}])
+        assert result[0]["content"] == content
+
+    def test_empty_text_parts_dropped_and_emptied_list_collapses(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": ""}, {"type": "text", "text": "hi"}]},
+            {"role": "tool", "tool_call_id": "1", "content": [{"type": "text", "text": ""}]},
+        ]
+        result = validate_and_fix_openai_messages(messages=messages)
+        assert result[0]["content"] == [{"type": "text", "text": "hi"}]
+        assert result[1]["content"] == ""
+
+    def test_mixed_tool_list_with_image_untouched(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        content = [
+            {"type": "text", "text": "shot"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]
+        result = validate_and_fix_openai_messages(
+            messages=[{"role": "tool", "tool_call_id": "1", "content": content}]
+        )
+        assert result[0]["content"] == content
+
+    def test_lone_surrogate_replaced_and_clean_text_untouched(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        messages = [
+            {"role": "user", "content": "clean \ud83d\ude00 text"},
+            {"role": "tool", "tool_call_id": "1", "content": "broken \ud800 here"},
+        ]
+        result = validate_and_fix_openai_messages(messages=messages)
+        assert result[0]["content"] == "clean \ud83d\ude00 text"
+        assert result[1]["content"] == "broken \ufffd here"
+        assert messages[1]["content"] == "broken \ud800 here"
+
+    def test_string_passthrough_keeps_roles_and_tool_calls(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        tool_calls = [{"id": "1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "ok", "tool_calls": tool_calls},
+            {"role": "tool", "tool_call_id": "1", "content": "done"},
+        ]
+        result = validate_and_fix_openai_messages(messages=messages)
+        assert [m["role"] for m in result] == ["user", "assistant", "tool"]
+        assert result[1]["tool_calls"] == tool_calls
+        assert result[2]["content"] == "done"
+
+    def test_none_content_untouched(self):
+        from litellm.utils import validate_and_fix_openai_messages
+
+        messages = [{"role": "assistant", "content": None, "tool_calls": [{"id": "1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}]
+        result = validate_and_fix_openai_messages(messages=messages)
+        assert "content" not in result[0]
+        assert result[0]["tool_calls"] == messages[0]["tool_calls"]
+
+
 def test_deepseek_v4_models_in_cost_map():
     """
     Test that deepseek-v4-flash and deepseek-v4-pro entries are correctly

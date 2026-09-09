@@ -242,7 +242,7 @@ async def _one_attempt(call: ProbeCall) -> AttemptOutcome:
         await acompletion(
             model=call.model,
             messages=[message],  # mutable-ok: litellm types messages as list
-            max_tokens=1,
+            max_tokens=16,
             timeout=call.timeout_seconds,
             api_key=call.api_key,
             api_base=call.api_base,

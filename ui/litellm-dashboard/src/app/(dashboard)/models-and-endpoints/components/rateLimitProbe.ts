@@ -49,6 +49,7 @@ export const planRateLimitProbe = (profile: ProviderProfile | null, values: Prov
       api_key: apiKey,
       api_base: apiBase === "" ? null : apiBase,
       api_version: profile.api_version ?? null,
+      custom_llm_provider: profile.custom_llm_provider ?? null,
       max_requests: MAX_REQUESTS,
     },
   };

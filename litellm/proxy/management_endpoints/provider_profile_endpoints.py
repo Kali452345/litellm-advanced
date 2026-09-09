@@ -72,6 +72,10 @@ class ProviderProfile(BaseModel):
     provider: str
     api_base: str | None = None
     api_version: str | None = None
+    custom_llm_provider: str | None = Field(
+        default=None,
+        description="How the provider's deployments resolve their model strings, null when they disagree",
+    )
     quota_scope: QuotaScopeMode | None = None
     quota_reset_timezone: str | None = None
     key_count: int = Field(description="How many distinct credentials already serve these models")
@@ -253,6 +257,7 @@ def _profile(*, provider: str, api_base: str | None, members: Sequence[_Provider
         provider=provider,
         api_base=api_base,
         api_version=_unanimous(member.params.api_version for member in members),
+        custom_llm_provider=_unanimous(member.params.custom_llm_provider for member in members),
         quota_scope=_unanimous_quota_scope(members),
         quota_reset_timezone=_unanimous(member.params.quota_reset_timezone for member in members),
         key_count=len(frozenset(member.credential_scope_id for member in members)),

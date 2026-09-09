@@ -104,6 +104,28 @@ def test_a_provider_reached_at_two_base_urls_has_two_profiles():
     assert {profile.provider for profile in profiles} == {"openai"}
 
 
+def test_profile_reports_how_its_keys_resolve_their_model_strings():
+    """A model string no provider can be named from alone still profiles when the
+    deployments carry how it resolves, so the probe can repeat that resolution."""
+    model_list = [
+        _entry("free", "z-ai/glm-5.3-free", "k1", api_base="https://router.example.com", custom_llm_provider="openai"),
+        _entry("free", "z-ai/glm-5.3-free", "k2", api_base="https://router.example.com", custom_llm_provider="openai"),
+    ]
+
+    profile = _profile_of(model_list, "openai")
+
+    assert profile.custom_llm_provider == "openai"
+
+
+def test_profile_reports_no_resolution_where_its_keys_disagree():
+    model_list = [
+        _entry("gpt", "openai/gpt-5", "k1", api_base="https://router.example.com", custom_llm_provider="openai"),
+        _entry("gpt", "openai/gpt-5", "k2", api_base="https://router.example.com"),
+    ]
+
+    assert _profile_of(model_list, "openai").custom_llm_provider is None
+
+
 def test_profile_reports_neither_the_key_nor_the_digest_of_it():
     secret = "sk-do-not-report-this"
     model_list = [_entry("flash", "gemini/gemini-2.5-flash", secret, quota_scope_id="an-account-name")]

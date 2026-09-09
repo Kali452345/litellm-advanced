@@ -219,6 +219,35 @@ def test_a_credential_field_outside_the_schema_is_refused(field: str):
         ProbeRateLimitRequest(**{"model": "gemini/gemini-2.5-flash", "api_key": "k1", field: "https://attacker.test"})
 
 
+async def test_the_probe_resolves_the_model_the_way_the_deployment_does(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A model string no provider can be named from alone needs the deployment's
+    custom_llm_provider, or the walk never sends a request at all."""
+    seen: dict[str, object] = {}
+
+    async def _fake_acompletion(**kwargs: object) -> None:
+        seen.update(kwargs)
+        raise ValueError("refused")
+
+    monkeypatch.setattr("litellm.main.acompletion", _fake_acompletion)
+
+    report = await probe_provider_rate_limit(
+        ProbeRateLimitRequest(
+            model="z-ai/glm-5.3-free",
+            api_key="k1",
+            api_base="https://router.example.com",
+            custom_llm_provider="openai",
+        ),
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
+
+    assert report.outcome == "refused"
+    assert seen["model"] == "z-ai/glm-5.3-free"
+    assert seen["custom_llm_provider"] == "openai"
+    assert seen["api_base"] == "https://router.example.com"
+
+
 def _refusal_row(*, used: int = 6) -> dict[str, object]:
     return {
         "model_id": "d1",

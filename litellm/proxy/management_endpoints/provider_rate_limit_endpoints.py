@@ -71,6 +71,11 @@ class ProbeRateLimitRequest(BaseModel):
     api_key: str = Field(min_length=1, repr=False, description="The key to measure")
     api_base: str | None = Field(default=None, description="Where to reach it, or null for the provider's own url")
     api_version: str | None = Field(default=None, description="Api version, for the providers that need one")
+    custom_llm_provider: str | None = Field(
+        default=None,
+        description="How the model string resolves, as /provider/profiles reports it, for model strings "
+        "no provider can be named from alone",
+    )
     max_requests: int = Field(
         default=60,
         ge=1,
@@ -133,6 +138,7 @@ class ProbeCall:
     api_key: str
     api_base: str | None
     api_version: str | None
+    custom_llm_provider: str | None
     timeout_seconds: float
 
 
@@ -241,6 +247,7 @@ async def _one_attempt(call: ProbeCall) -> AttemptOutcome:
             api_key=call.api_key,
             api_base=call.api_base,
             api_version=call.api_version,
+            custom_llm_provider=call.custom_llm_provider,
             num_retries=0,
             max_retries=0,
         )
@@ -272,6 +279,7 @@ async def probe_provider_rate_limit(
         api_key=request.api_key,
         api_base=request.api_base,
         api_version=request.api_version,
+        custom_llm_provider=request.custom_llm_provider,
         timeout_seconds=_ATTEMPT_TIMEOUT_SECONDS,
     )
     return await probe_rate_limit(

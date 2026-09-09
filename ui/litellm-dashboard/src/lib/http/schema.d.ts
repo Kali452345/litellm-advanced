@@ -33976,6 +33976,11 @@ export interface components {
              */
             api_version?: string | null;
             /**
+             * Custom Llm Provider
+             * @description How the model string resolves, as /provider/profiles reports it, for model strings no provider can be named from alone
+             */
+            custom_llm_provider?: string | null;
+            /**
              * Max Requests
              * @description Give up after this many accepted requests, so a key with a high cap cannot run forever
              * @default 60
@@ -34175,6 +34180,11 @@ export interface components {
             api_base?: string | null;
             /** Api Version */
             api_version?: string | null;
+            /**
+             * Custom Llm Provider
+             * @description How the provider's deployments resolve their model strings, null when they disagree
+             */
+            custom_llm_provider?: string | null;
             /**
              * Key Count
              * @description How many distinct credentials already serve these models

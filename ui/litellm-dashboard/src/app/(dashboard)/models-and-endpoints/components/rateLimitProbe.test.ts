@@ -10,6 +10,7 @@ const profile = (overrides: Partial<ProviderProfile> = {}): ProviderProfile => (
   provider: "gemini",
   api_base: null,
   api_version: null,
+  custom_llm_provider: null,
   key_count: 2,
   quota_scope: null,
   quota_reset_timezone: null,
@@ -39,6 +40,7 @@ describe("planRateLimitProbe", () => {
         api_key: "k3",
         api_base: null,
         api_version: null,
+        custom_llm_provider: null,
         max_requests: 60,
       },
     });
@@ -70,6 +72,15 @@ describe("planRateLimitProbe", () => {
     });
 
     expect(plan).toMatchObject({ request: { api_base: null } });
+  });
+
+  it("measures the key the way the deployment resolves its model string", () => {
+    const plan = planRateLimitProbe(profile({ custom_llm_provider: "openai" }), {
+      api_key: "k3",
+      models: ["flash"],
+    });
+
+    expect(plan).toMatchObject({ request: { custom_llm_provider: "openai" } });
   });
 
   it("trims the key rather than measuring one the provider would reject", () => {

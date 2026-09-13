@@ -10,6 +10,9 @@ GET /provider/profiles - what each provider is set up with: its base url, the mo
 POST /provider/keys - add another key to a provider, creating one deployment per model
     that provider serves, under the same public model names, so the new key joins the
     pools the old ones are already rotating through
+POST /provider/keys/models - serve another model with a key that is already set up,
+    creating one deployment under a new public model name with the same credential,
+    so one key can serve several models without its secret ever leaving the server
 
 A profile is derived from the live model list rather than stored, so the first
 deployment an operator creates for a provider is what saves its shape, and there is no
@@ -122,6 +125,14 @@ class AddedModel(BaseModel):
     error: str | None = None
 
 
+class AddKeyModelRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
+
+    model_id: str = Field(description="The deployment whose credential serves the new model")
+    model_name: str = Field(min_length=1, description="The public name callers ask for")
+    litellm_model: str = Field(min_length=1, description="The model string the provider itself is sent")
+
+
 class AddProviderKeyResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -159,6 +170,54 @@ class UnknownModels:
 @dataclass(frozen=True, slots=True)
 class KeyAlreadyConfigured:
     provider: str
+
+
+@dataclass(frozen=True, slots=True)
+class KeySourceCredential:
+    """The credential and shape one deployment serves with, copied onto another model."""
+
+    api_key: str | None
+    litellm_credential_name: str | None
+    api_base: str | None
+    api_version: str | None
+    custom_llm_provider: str | None
+    rpm: int | None
+    rpd: int | None
+    quota_scope: QuotaScopeMode | None
+    quota_scope_id: str | None
+    quota_reset_timezone: str | None
+    pinned_params: Mapping[str, PinnedParamValue] | None
+    additional_drop_params: tuple[str, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class KeyModelPlan:
+    model_name: str
+    litellm_model: str
+    deployment: Deployment
+
+
+@dataclass(frozen=True, slots=True)
+class UnknownDeployment:
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialUnreadable:
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TeamScopedSource:
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ModelAlreadyServed:
+    model_name: str
+
+
+KeyModelRejected: TypeAlias = UnknownDeployment | CredentialUnreadable | TeamScopedSource | ModelAlreadyServed
 
 
 PlanRejected: TypeAlias = UnknownProvider | SeveralApiBases | UnknownModels | KeyAlreadyConfigured
@@ -469,6 +528,68 @@ def _planned_deployments(
     )
 
 
+def plan_key_model(
+    request: AddKeyModelRequest, *, source: KeySourceCredential, model_list: Sequence[Mapping[str, object]]
+) -> KeyModelPlan | KeyModelRejected:
+    """
+    The deployment that serves `request.model_name` with `source`'s credential.
+
+    Everything about how the credential reaches the provider is copied: the base
+    url, the version, the resolution, the caps, the metering scope and the param
+    pins. `quota_scope_id` is copied too, unlike the new-key flow: this is the
+    same credential, so sharing its counter is correct rather than double
+    counting. Only the names change, to the model asked for.
+
+    A model the same credential already serves under the same public name is
+    refused, since creating it again would only split one pool into twins.
+    """
+    if _credential_serves_model(source=source, model_name=request.model_name, model_list=model_list):
+        return ModelAlreadyServed(model_name=request.model_name)
+    return KeyModelPlan(
+        model_name=request.model_name,
+        litellm_model=request.litellm_model,
+        deployment=Deployment(
+            model_name=request.model_name,
+            litellm_params=LiteLLM_Params(
+                model=request.litellm_model,
+                api_key=source.api_key,
+                api_base=source.api_base,
+                api_version=source.api_version,
+                custom_llm_provider=source.custom_llm_provider,
+                litellm_credential_name=source.litellm_credential_name,
+                rpm=source.rpm,
+                rpd=source.rpd,
+                quota_scope=source.quota_scope,
+                quota_scope_id=source.quota_scope_id,
+                quota_reset_timezone=source.quota_reset_timezone,
+                pinned_params=source.pinned_params,
+                additional_drop_params=_drop_list(source.additional_drop_params),
+            ),
+        ),
+    )
+
+
+def _credential_serves_model(
+    *, source: KeySourceCredential, model_name: str, model_list: Sequence[Mapping[str, object]]
+) -> bool:
+    """Whether this credential already serves this public name, by key or vault name."""
+    return any(
+        _same_credential(deployment, source=source) and deployment.model_name == model_name
+        for deployment in _parse_deployments(model_list)
+    )
+
+
+def _same_credential(deployment: _ProviderDeployment, *, source: KeySourceCredential) -> bool:
+    if deployment.params.api_base != source.api_base:
+        return False
+    if source.api_key is not None:
+        return deployment.params.api_key == source.api_key
+    return (
+        deployment.params.api_key is None
+        and deployment.params.litellm_credential_name == source.litellm_credential_name
+    )
+
+
 async def apply_provider_key(
     *,
     plan: ProviderKeyPlan,
@@ -638,3 +759,130 @@ async def add_provider_key(
             )
         case _:
             _raise_public(planned)
+
+
+def _raise_key_model_public(rejected: KeyModelRejected) -> Never:
+    status_code, body = _key_model_failure(rejected)
+    _raise_http(status_code=status_code, body=body)
+
+
+def _key_model_failure(rejected: KeyModelRejected) -> tuple[int, _ErrorBody]:
+    match rejected:
+        case UnknownDeployment(model_id=model_id):
+            return status.HTTP_404_NOT_FOUND, _ErrorBody(error=f"no deployment is stored with id '{model_id}'")
+        case CredentialUnreadable(model_id=model_id):
+            return status.HTTP_500_INTERNAL_SERVER_ERROR, _ErrorBody(
+                error=f"the credential on deployment '{model_id}' cannot be read, so it cannot be copied. "
+                "Check that the salt key matches the one that stored it"
+            )
+        case TeamScopedSource():
+            return status.HTTP_400_BAD_REQUEST, _ErrorBody(
+                error="team models are owned by the team flow and cannot seed a shared deployment"
+            )
+        case ModelAlreadyServed(model_name=model_name):
+            return status.HTTP_409_CONFLICT, _ErrorBody(
+                error=f"this key already serves '{model_name}', so there is nothing to add"
+            )
+        case _:
+            assert_never(rejected)
+
+
+def _source_credential(row: Mapping[str, object]) -> KeySourceCredential | None:
+    """The credential a stored row serves with, decrypted for copying.
+
+    Reads through the same view the profiles use, so caps kept wherever a
+    deployment carries them (top level, params, or model info) copy over.
+    Returns None when a stored string key cannot be decrypted. A deployment with
+    no key (provider defaults or environment) copies as keyless, which is the
+    same way it serves today. `os.environ` references round-trip untouched.
+    """
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_value_helper
+
+    try:
+        view: Final = _ProviderDeploymentView.model_validate(row)
+    except ValidationError:
+        return None
+    params: Final = view.litellm_params
+    api_key: Final = params.api_key
+    decrypted: Final[str | None] = (
+        api_key if api_key is None else decrypt_value_helper(value=api_key, key="api_key", exception_type="debug")
+    )
+    if isinstance(api_key, str) and not isinstance(decrypted, str):
+        return None
+    return KeySourceCredential(
+        api_key=decrypted,
+        litellm_credential_name=params.litellm_credential_name,
+        api_base=params.api_base,
+        api_version=params.api_version,
+        custom_llm_provider=params.custom_llm_provider,
+        rpm=_first_set(view.rpm, params.rpm, view.model_info.rpm),
+        rpd=_first_set(view.rpd, params.rpd, view.model_info.rpd),
+        quota_scope=params.quota_scope,
+        quota_scope_id=params.quota_scope_id,
+        quota_reset_timezone=params.quota_reset_timezone,
+        pinned_params=params.pinned_params,
+        additional_drop_params=tuple(params.additional_drop_params) if params.additional_drop_params else None,
+    )
+
+
+def _source_team_id(row: Mapping[str, object]) -> str | None:
+    """The team a stored row belongs to, when it belongs to one."""
+    model_info: Final = row.get("model_info")
+    if not isinstance(model_info, dict):
+        return None
+    team_id: Final = model_info.get("team_id")
+    return team_id if isinstance(team_id, str) and team_id else None
+
+
+async def _stored_row(model_id: str) -> Mapping[str, object] | None:
+    """The stored deployment row, or None when no row carries this id."""
+    from litellm.proxy.proxy_server import prisma_client
+    from litellm.repositories.model_repository import ModelRepository
+
+    if prisma_client is None:
+        _raise_http(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            body=_ErrorBody(error=CommonProxyErrors.db_not_connected_error.value),
+        )
+    row: Final = await ModelRepository(prisma_client).table.find_unique(where={"model_id": model_id})
+    if row is None:
+        return None
+    dumped: Final = row.model_dump()
+    return dumped if isinstance(dumped, dict) else None
+
+
+@router.post(
+    "/provider/keys/models",
+    description="Serve another model with a key that is already set up, under a new public model name",
+    response_model=AddedModel,
+)
+async def add_key_model(
+    request: AddKeyModelRequest,
+    user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
+) -> AddedModel:
+    """
+    ```bash
+    curl -X POST 'http://0.0.0.0:4000/provider/keys/models' -H 'Authorization: Bearer sk-1234' \\
+      -H 'Content-Type: application/json' \\
+      -d '{"model_id": "3f2c...", "model_name": "smart", "litellm_model": "gemini/gemini-2.5-pro"}'
+    ```
+    """
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+        _raise_http(
+            status_code=status.HTTP_403_FORBIDDEN, body=_ErrorBody(error=CommonProxyErrors.not_allowed_access.value)
+        )
+    stored: Final = await _stored_row(request.model_id)
+    if stored is None:
+        _raise_http(status_code=status.HTTP_404_NOT_FOUND, body=_ErrorBody(error="no deployment is stored with id"))
+    if _source_team_id(stored) is not None:
+        _raise_key_model_public(TeamScopedSource(model_id=request.model_id))
+    source: Final = _source_credential(stored)
+    if source is None:
+        _raise_key_model_public(CredentialUnreadable(model_id=request.model_id))
+    planned: Final = plan_key_model(request, source=source, model_list=_live_model_list())
+    match planned:
+        case KeyModelPlan(deployment=deployment):
+            outcome: Final = await _create_via_model_new(deployment, user_api_key_dict=user_api_key_dict)
+            return _added(model_name=planned.model_name, litellm_model=planned.litellm_model, outcome=outcome)
+        case _:
+            _raise_key_model_public(planned)

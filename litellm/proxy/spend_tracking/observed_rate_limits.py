@@ -32,6 +32,18 @@ from litellm.router_utils.quota import QuotaWindowKind
 RATE_LIMIT_STATUS_CODE: Final = "429"
 DEFAULT_LOOKBACK_HOURS: Final = 24
 DEFAULT_ROW_LIMIT: Final = 5000
+FAILURE_MESSAGE_LIMIT: Final = 300
+
+
+class KeyFailureSummary(BaseModel):
+    """How often one key failed recently, of any kind, and what it said last."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model_id: str = Field(description="The deployment id that failed")
+    failures: int = Field(description="Provider failures on this key inside the window")
+    last_error: str = Field(description="What the most recent failure said, truncated")
+    last_error_at: dt.datetime = Field(description="When the most recent failure landed")
 
 
 class ObservedWindow(BaseModel):
@@ -221,3 +233,54 @@ async def read_refusals(
         take=limit,
     )
     return tuple(attempt for attempt in (refused_attempt(row) for row in rows) if attempt is not None)
+
+
+class _FailureRow(BaseModel):
+    model_config = ConfigDict(extra="ignore", from_attributes=True, protected_namespaces=())
+
+    model_id: str = ""
+    end_time: dt.datetime = Field(validation_alias="endTime")
+    exception_string: str = ""
+
+
+def _failure_of(row: object) -> tuple[str, dt.datetime, str] | None:
+    """One database row as a (model id, time, message) failure, or None when unreadable."""
+    try:
+        view: Final = _FailureRow.model_validate(row)
+    except ValidationError as e:
+        verbose_proxy_logger.debug("Skipping an unreadable error log row: %s", e)
+        return None
+    if not view.model_id:
+        return None
+    return view.model_id, view.end_time, view.exception_string[:FAILURE_MESSAGE_LIMIT]
+
+
+async def read_recent_failures(
+    prisma_client: object, *, since: dt.datetime, limit: int = DEFAULT_ROW_LIMIT
+) -> tuple[KeyFailureSummary, ...]:
+    """One summary per key that failed inside the window, of any status code.
+
+    Sibling of `read_refusals` without its 429 filter: a key dying on 400s or
+    timeouts never appears in the observed limits, and this is what surfaces it.
+    """
+    rows: Final = await ErrorLogsRepository(prisma_client).table.find_many(
+        where={"startTime": {"gte": since}},  # mutable-ok: prisma needs dicts
+        order={"startTime": "desc"},  # mutable-ok: prisma needs dicts
+        take=limit,
+    )
+    parsed: Final = tuple(entry for entry in (_failure_of(row) for row in rows) if entry is not None)
+    model_ids: Final = tuple(dict.fromkeys(entry[0] for entry in parsed))
+    return tuple(
+        _failure_summary(model_id, tuple(entry for entry in parsed if entry[0] == model_id)) for model_id in model_ids
+    )
+
+
+def _failure_summary(model_id: str, entries: Sequence[tuple[str, dt.datetime, str]]) -> KeyFailureSummary:
+    """One key's failures as a count plus what the latest one said."""
+    latest: Final = max(entries, key=lambda entry: entry[1])
+    return KeyFailureSummary(
+        model_id=model_id,
+        failures=len(entries),
+        last_error=latest[2],
+        last_error_at=latest[1],
+    )

@@ -10,6 +10,7 @@ from litellm.proxy.management_endpoints.model_quota_endpoints import (
     get_model_quota_usage,
     quota_usage_of,
 )
+from litellm.proxy.spend_tracking.observed_rate_limits import KeyFailureSummary
 from litellm.router import Router
 from litellm.router_utils.quota.enforcement import DeploymentQuotaUsage, WindowUsage
 
@@ -228,3 +229,62 @@ async def test_reading_quota_usage_is_denied_to_a_role_without_the_admin_view():
         await get_model_quota_usage(user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.INTERNAL_USER))
 
     assert denied.value.status_code == 403
+
+
+def _failure(
+    model_id: str,
+    failures: int,
+    last_error: str = "provider blew up",
+    at: dt.datetime | None = None,
+) -> KeyFailureSummary:
+    return KeyFailureSummary(
+        model_id=model_id,
+        failures=failures,
+        last_error=last_error,
+        last_error_at=at or dt.datetime(2026, 9, 8, tzinfo=dt.timezone.utc),
+    )
+
+
+def test_a_paused_key_reports_paused_and_out_of_rotation():
+    reported = derive_quota_usage(
+        deployments=[
+            {
+                "model_name": "group",
+                "litellm_params": {"model": "gemini/gemini-3.7-flash", "api_key": SECRET},
+                "model_info": {"id": "d1", "blocked": True},
+            }
+        ],
+        usage=[usage("d1", minute(limit=5, used=0))],
+        enforced=True,
+    )
+
+    (key,) = reported.pools[0].keys
+    assert key.blocked is True
+    assert key.exhausted is True, "routing skips a paused key, so it must read as having no room"
+    assert key.seconds_until_room is None, "no window frees a paused key, so no wait is honest"
+
+
+def test_failures_attach_to_the_key_that_logged_them():
+    reported = derive_quota_usage(
+        deployments=[deployment("d1"), deployment("d2", api_key="sk-second")],
+        usage=[usage("d1", minute(limit=5, used=0)), usage("d2", minute(limit=5, used=0))],
+        enforced=True,
+        failures=(_failure("d2", 4, last_error="429 RESOURCE_EXHAUSTED"),),
+    )
+
+    first, second = reported.pools[0].keys
+    assert (first.recent_failures, first.last_error) == (0, None)
+    assert (second.recent_failures, second.last_error) == (4, "429 RESOURCE_EXHAUSTED")
+    assert second.last_error_at == dt.datetime(2026, 9, 8, tzinfo=dt.timezone.utc)
+
+
+def test_failures_for_a_key_no_pool_serves_are_ignored():
+    reported = derive_quota_usage(
+        deployments=[deployment("d1")],
+        usage=[usage("d1", minute(limit=5, used=0))],
+        enforced=True,
+        failures=(_failure("gone", 9),),
+    )
+
+    (key,) = reported.pools[0].keys
+    assert (key.recent_failures, key.last_error) == (0, None)

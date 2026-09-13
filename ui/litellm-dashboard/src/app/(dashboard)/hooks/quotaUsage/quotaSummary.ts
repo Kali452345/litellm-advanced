@@ -17,11 +17,15 @@ export interface KeyView {
   litellmModel: string;
   provider: string;
   apiBase: string | null;
+  blocked: boolean;
   exhausted: boolean;
   metered: boolean;
   windows: WindowView[];
   readyIn: string | null;
   tightestFractionUsed: number;
+  recentFailures: number;
+  lastError: string | null;
+  lastErrorAt: string | null;
 }
 
 export interface PoolView {
@@ -104,11 +108,15 @@ export const toKeyView = (key: KeyQuotaUsage): KeyView => {
     litellmModel: key.litellm_model,
     provider: providerOf(key),
     apiBase: key.api_base ?? null,
+    blocked: key.blocked ?? false,
     exhausted: key.exhausted,
     metered: windows.length > 0,
     windows,
     readyIn: key.seconds_until_room == null ? null : formatCountdown(key.seconds_until_room),
     tightestFractionUsed: windows.reduce((tightest, window) => Math.max(tightest, window.fractionUsed), 0),
+    recentFailures: key.recent_failures ?? 0,
+    lastError: key.last_error ?? null,
+    lastErrorAt: key.last_error_at ?? null,
   };
 };
 

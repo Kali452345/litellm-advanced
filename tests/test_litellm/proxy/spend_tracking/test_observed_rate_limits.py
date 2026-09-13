@@ -22,6 +22,7 @@ from litellm.proxy.spend_tracking.deployment_error_logs import (
 from litellm.proxy.spend_tracking.observed_rate_limits import (
     RefusedAttempt,
     derive_observed_limits,
+    read_recent_failures,
     read_refusals,
     refused_attempt,
 )
@@ -232,3 +233,36 @@ async def test_only_rate_limit_refusals_inside_the_window_are_read():
     assert table.query["order"] == {"startTime": "desc"}
     assert table.query["take"] == 200
     assert [attempt.model_id for attempt in attempts] == ["d1"]
+
+
+def _failure_row(*, model_id: str, message: str, at: dt.datetime) -> Mapping[str, object]:
+    return {"model_id": model_id, "endTime": at, "exception_string": message}
+
+
+async def test_recent_failures_count_every_status_by_key():
+    """A key dying on 400s never appears in the observed limits, and this is what surfaces it."""
+    table = _Table(
+        (
+            _failure_row(model_id="d1", message="429 RESOURCE_EXHAUSTED", at=_SINCE + dt.timedelta(minutes=1)),
+            _failure_row(model_id="d1", message="500 overloaded", at=_SINCE + dt.timedelta(minutes=2)),
+            _failure_row(model_id="d2", message="Timeout", at=_SINCE + dt.timedelta(minutes=3)),
+            _failure_row(model_id="", message="orphan", at=_SINCE + dt.timedelta(minutes=4)),
+        )
+    )
+
+    summaries = await read_recent_failures(_Prisma(table), since=_SINCE)
+
+    assert table.query["where"] == {"startTime": {"gte": _SINCE}}
+    by_id = {summary.model_id: summary for summary in summaries}
+    assert (by_id["d1"].failures, by_id["d1"].last_error) == (2, "500 overloaded")
+    assert by_id["d1"].last_error_at == _SINCE + dt.timedelta(minutes=2)
+    assert by_id["d2"].failures == 1
+    assert "" not in by_id
+
+
+async def test_a_long_error_is_truncated_for_display():
+    table = _Table((_failure_row(model_id="d1", message="x" * 500, at=_SINCE),))
+
+    (summary,) = await read_recent_failures(_Prisma(table), since=_SINCE)
+
+    assert len(summary.last_error) == 300

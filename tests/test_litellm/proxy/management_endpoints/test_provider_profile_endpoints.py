@@ -13,20 +13,31 @@ from pydantic import ValidationError
 
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.management_endpoints.provider_profile_endpoints import (
+    AddKeyModelRequest,
     AddProviderKeyRequest,
+    CredentialUnreadable,
     DeploymentCreated,
     DeploymentRejected,
     KeyAlreadyConfigured,
+    KeyModelPlan,
+    KeyModelRejected,
+    KeySourceCredential,
+    ModelAlreadyServed,
     PlanRejected,
     ProviderKeyPlan,
     SeveralApiBases,
+    TeamScopedSource,
+    UnknownDeployment,
     UnknownModels,
     UnknownProvider,
+    _raise_key_model_public,
     _raise_public,
+    _source_credential,
     add_provider_key,
     apply_provider_key,
     derive_provider_profiles,
     list_provider_profiles,
+    plan_key_model,
     plan_provider_key,
 )
 from litellm.router_utils.quota import DEFAULT_QUOTA_SCOPE_MODE, resolve_quota_scope
@@ -560,3 +571,118 @@ def test_a_credential_field_outside_the_schema_is_refused(field: str):
     the schema is the only thing left refusing the rest of what that blocklist covers."""
     with pytest.raises(ValidationError):
         AddProviderKeyRequest(**{"provider": "gemini", "api_key": "k1", field: "https://attacker.test"})
+
+
+def _source(*, quota_scope_id: str | None = None) -> KeySourceCredential:
+    return KeySourceCredential(
+        api_key="k-source",
+        litellm_credential_name=None,
+        api_base="https://router.example.com",
+        api_version=None,
+        custom_llm_provider="openai",
+        rpm=5,
+        rpd=100,
+        quota_scope=None,
+        quota_scope_id=quota_scope_id,
+        quota_reset_timezone=None,
+        pinned_params=None,
+        additional_drop_params=None,
+    )
+
+
+def test_serving_another_model_copies_the_credential_and_renames_only():
+    planned = plan_key_model(
+        AddKeyModelRequest(model_id="d1", model_name="smart", litellm_model="openai/gpt-5"),
+        source=_source(),
+        model_list=[],
+    )
+
+    assert isinstance(planned, KeyModelPlan)
+    assert (planned.model_name, planned.litellm_model) == ("smart", "openai/gpt-5")
+    params = planned.deployment.litellm_params
+    assert (params.api_key, params.api_base, params.rpm, params.rpd) == (
+        "k-source",
+        "https://router.example.com",
+        5,
+        100,
+    )
+    assert planned.deployment.model_name == "smart"
+
+
+def test_a_credential_shares_its_counter_when_it_serves_another_model():
+    """The same key spending from two models is one allowance, unlike two keys sharing one."""
+    planned = plan_key_model(
+        AddKeyModelRequest(model_id="d1", model_name="smart", litellm_model="openai/gpt-5"),
+        source=_source(quota_scope_id="one-account"),
+        model_list=[],
+    )
+
+    assert isinstance(planned, KeyModelPlan)
+    assert planned.deployment.litellm_params.quota_scope_id == "one-account"
+
+
+def test_serving_a_model_the_credential_already_serves_is_refused():
+    live = [
+        _entry("smart", "openai/gpt-5", "k-source", api_base="https://router.example.com", deployment_id="d9"),
+    ]
+
+    planned = plan_key_model(
+        AddKeyModelRequest(model_id="d1", model_name="smart", litellm_model="openai/gpt-5"),
+        source=_source(),
+        model_list=live,
+    )
+
+    assert isinstance(planned, ModelAlreadyServed)
+    assert planned.model_name == "smart"
+
+
+def test_a_stored_credential_decrypts_for_copying(monkeypatch: pytest.MonkeyPatch):
+    """The key never leaves the server: the plan carries the decrypted copy in memory only."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-key-model-salt")
+
+    row = {
+        "model_name": "fast",
+        "litellm_params": {
+            "model": "openai/gpt-4o-mini",
+            "api_key": encrypt_value_helper("k-live"),
+            "api_base": "https://router.example.com",
+            "rpm": 7,
+        },
+        "model_info": {"id": "d1"},
+    }
+
+    source = _source_credential(row)
+
+    assert source is not None
+    assert (source.api_key, source.rpm) == ("k-live", 7)
+
+
+def test_a_credential_no_salt_can_read_is_not_copied(monkeypatch: pytest.MonkeyPatch):
+    """Copying ciphertext as if it were a key would store double encryption, so refuse instead."""
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-a-totally-different-salt-key")
+
+    row = {
+        "model_name": "fast",
+        "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "v2:gcm:not-real-ciphertext"},
+        "model_info": {"id": "d1"},
+    }
+
+    assert _source_credential(row) is None
+
+
+@pytest.mark.parametrize(
+    ("rejected", "expected_status"),
+    [
+        (UnknownDeployment(model_id="d-missing"), 404),
+        (CredentialUnreadable(model_id="d1"), 500),
+        (TeamScopedSource(model_id="d1"), 400),
+        (ModelAlreadyServed(model_name="smart"), 409),
+    ],
+)
+def test_each_key_model_rejection_answers_with_its_own_status(rejected: KeyModelRejected, expected_status: int):
+    with pytest.raises(HTTPException) as raised:
+        _raise_key_model_public(rejected)
+
+    assert raised.value.status_code == expected_status

@@ -21,6 +21,7 @@ salted digest of the key itself.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Final, Never
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,6 +34,7 @@ from litellm.proxy._types import (
     user_api_key_has_admin_view,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.spend_tracking.observed_rate_limits import KeyFailureSummary, read_recent_failures
 from litellm.router import Router
 from litellm.router_utils.quota import AtomicWindowCounter, DeploymentQuotaUsage, QuotaEnforcer, QuotaWindowKind
 
@@ -58,10 +60,16 @@ class KeyQuotaUsage(BaseModel):
     model_id: str = Field(description="The deployment id this key serves this model under")
     litellm_model: str = Field(description="The model string the provider itself is sent")
     api_base: str | None = None
+    blocked: bool = Field(default=False, description="Whether an admin paused this key, so routing skips it")
     exhausted: bool = Field(description="Whether any of this key's windows is spent, so routing will skip it")
     seconds_until_room: int | None = Field(
         default=None, description="When this key can take another request, null when it can right now"
     )
+    recent_failures: int = Field(
+        default=0, description="Provider failures on this key in the last day, of any kind, not just rate limits"
+    )
+    last_error: str | None = Field(default=None, description="What the most recent failure said, truncated")
+    last_error_at: datetime | None = Field(default=None, description="When the most recent failure landed")
     windows: tuple[QuotaWindowUsage, ...] = Field(
         default=(), description="Empty when this key has no cap configured, so nothing meters it"
     )
@@ -103,6 +111,7 @@ class _QuotaUsageModelInfo(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str | None = None
+    blocked: bool | None = None
 
 
 class _QuotaUsageView(BaseModel):
@@ -125,6 +134,7 @@ def derive_quota_usage(
     usage: Sequence[DeploymentQuotaUsage],
     enforced: bool,
     max_wait_seconds: float = DEFAULT_QUOTA_MAX_WAIT_SECONDS,
+    failures: Sequence[KeyFailureSummary] = (),
 ) -> ModelQuotaUsageResponse:
     """
     Group per-deployment counter reads into one entry per model name.
@@ -133,9 +143,10 @@ def derive_quota_usage(
     `QuotaEnforcer.usage` returns, so the two zip. A deployment that cannot be read
     well enough to name is dropped rather than reported without an identity.
     """
+    failed: Final = {summary.model_id: summary for summary in failures}
     members: Final = tuple(
         member
-        for member in (_member(deployment, row) for deployment, row in zip(deployments, usage, strict=True))
+        for member in (_member(deployment, row, failed) for deployment, row in zip(deployments, usage, strict=True))
         if member is not None
     )
     names: Final = tuple(dict.fromkeys(member.model_name for member in members))
@@ -167,21 +178,32 @@ def _pool(*, model_name: str, keys: Sequence[KeyQuotaUsage]) -> PoolQuotaUsage:
     )
 
 
-def _member(deployment: Mapping[str, object], row: DeploymentQuotaUsage) -> _PoolMember | None:
+def _member(
+    deployment: Mapping[str, object],
+    row: DeploymentQuotaUsage,
+    failures: Mapping[str, KeyFailureSummary],
+) -> _PoolMember | None:
     try:
         view: Final = _QuotaUsageView.model_validate(deployment)
     except ValidationError:
         return None
     if view.model_info.id is None:
         return None
+    blocked: Final = view.model_info.blocked is True
+    exhausted: Final = row.exhausted or blocked
+    failure: Final = failures.get(view.model_info.id)
     return _PoolMember(
         model_name=view.model_name,
         key=KeyQuotaUsage(
             model_id=view.model_info.id,
             litellm_model=view.litellm_params.model,
             api_base=view.litellm_params.api_base,
-            exhausted=row.exhausted,
-            seconds_until_room=row.seconds_until_room,
+            blocked=blocked,
+            exhausted=exhausted,
+            seconds_until_room=None if blocked else row.seconds_until_room,
+            recent_failures=failure.failures if failure is not None else 0,
+            last_error=failure.last_error if failure is not None else None,
+            last_error_at=failure.last_error_at if failure is not None else None,
             windows=tuple(
                 QuotaWindowUsage(
                     kind=window.kind,
@@ -223,7 +245,7 @@ def _live_router() -> Router:
     return llm_router
 
 
-async def quota_usage_of(live: Router) -> ModelQuotaUsageResponse:
+async def quota_usage_of(live: Router, failures: Sequence[KeyFailureSummary] = ()) -> ModelQuotaUsageResponse:
     """
     Read a live router's quota counters.
 
@@ -239,7 +261,11 @@ async def quota_usage_of(live: Router) -> ModelQuotaUsageResponse:
         usage=await reader.usage(deployments),
         enforced=live.quota_enforcer is not None,
         max_wait_seconds=reader.max_wait_seconds,
+        failures=failures,
     )
+
+
+_FAILURE_LOOKBACK_HOURS: Final = 24
 
 
 @router.get(
@@ -255,5 +281,11 @@ async def get_model_quota_usage(
     curl -X GET 'http://0.0.0.0:4000/model/quota/usage' -H 'Authorization: Bearer sk-1234'
     ```
     """
+    from litellm.proxy.proxy_server import prisma_client
+
     _raise_unless_admin_view(user_api_key_dict)
-    return await quota_usage_of(_live_router())
+    failures: Sequence[KeyFailureSummary] = ()
+    if prisma_client is not None:
+        since: Final = datetime.now(timezone.utc) - timedelta(hours=_FAILURE_LOOKBACK_HOURS)
+        failures = await read_recent_failures(prisma_client, since=since)
+    return await quota_usage_of(_live_router(), failures=failures)

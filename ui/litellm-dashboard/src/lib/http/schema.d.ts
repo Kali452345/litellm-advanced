@@ -12108,6 +12108,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/provider/keys/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Key Model
+         * @description Serve another model with a key that is already set up, under a new public model name
+         */
+        post: operations["add_key_model_provider_keys_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/provider/profiles": {
         parameters: {
             query?: never;
@@ -22757,6 +22777,24 @@ export interface components {
              */
             quality: number;
         };
+        /** AddKeyModelRequest */
+        AddKeyModelRequest: {
+            /**
+             * Litellm Model
+             * @description The model string the provider itself is sent
+             */
+            litellm_model: string;
+            /**
+             * Model Id
+             * @description The deployment whose credential serves the new model
+             */
+            model_id: string;
+            /**
+             * Model Name
+             * @description The public name callers ask for
+             */
+            model_name: string;
+        };
         /** AddProviderKeyRequest */
         AddProviderKeyRequest: {
             /**
@@ -27953,10 +27991,26 @@ export interface components {
             /** Api Base */
             api_base?: string | null;
             /**
+             * Blocked
+             * @description Whether an admin paused this key, so routing skips it
+             * @default false
+             */
+            blocked: boolean;
+            /**
              * Exhausted
              * @description Whether any of this key's windows is spent, so routing will skip it
              */
             exhausted: boolean;
+            /**
+             * Last Error
+             * @description What the most recent failure said, truncated
+             */
+            last_error?: string | null;
+            /**
+             * Last Error At
+             * @description When the most recent failure landed
+             */
+            last_error_at?: string | null;
             /**
              * Litellm Model
              * @description The model string the provider itself is sent
@@ -27967,6 +28021,12 @@ export interface components {
              * @description The deployment id this key serves this model under
              */
             model_id: string;
+            /**
+             * Recent Failures
+             * @description Provider failures on this key in the last day, of any kind, not just rate limits
+             * @default 0
+             */
+            recent_failures: number;
             /**
              * Seconds Until Room
              * @description When this key can take another request, null when it can right now
@@ -54870,6 +54930,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AddProviderKeyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_key_model_provider_keys_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddKeyModelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddedModel"];
                 };
             };
             /** @description Validation Error */

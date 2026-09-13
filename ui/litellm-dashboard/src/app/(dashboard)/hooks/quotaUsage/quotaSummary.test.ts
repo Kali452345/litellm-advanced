@@ -119,6 +119,26 @@ describe("toKeyView", () => {
     expect(view.windows[0].fractionUsed).toBe(1);
   });
 
+  it("carries the pause flag and the failure reading onto the view", () => {
+    const view = toKeyView(
+      key({ blocked: true, recent_failures: 4, last_error: "500 overloaded", last_error_at: "2026-09-08T12:00:00Z" }),
+    );
+
+    expect(view.blocked).toBe(true);
+    expect(view.recentFailures).toBe(4);
+    expect(view.lastError).toBe("500 overloaded");
+    expect(view.lastErrorAt).toBe("2026-09-08T12:00:00Z");
+  });
+
+  it("defaults a key with no health reading to unpaused and unfailing", () => {
+    const view = toKeyView(key());
+
+    expect(view.blocked).toBe(false);
+    expect(view.recentFailures).toBe(0);
+    expect(view.lastError).toBeNull();
+    expect(view.lastErrorAt).toBeNull();
+  });
+
   it("says nothing about readiness for a key that can take a request right now", () => {
     expect(toKeyView(key({ seconds_until_room: null })).readyIn).toBeNull();
   });

@@ -27,6 +27,7 @@ from litellm.litellm_core_utils.url_utils import (
     validate_url,
 )
 from litellm.proxy._types import *
+from litellm.proxy.auth.resolvers.exceptions import KeyNotFoundError
 from litellm.proxy.common_utils.http_parsing_utils import extract_nested_form_metadata
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     LITELLM_PASS_THROUGH_ENDPOINT_MARKER,
@@ -53,6 +54,11 @@ def is_invalid_virtual_key_error(exception: BaseException | None) -> bool:
         return False
 
     return getattr(exception, INVALID_VIRTUAL_KEY_ERROR_MARKER, False) is True
+
+
+def is_unknown_key_rejection(exception: BaseException | None) -> bool:
+    """True when auth rejected a key that belongs to no one, so the key is caller-chosen, not an identity."""
+    return isinstance(exception, KeyNotFoundError) or is_invalid_virtual_key_error(exception)
 
 
 def mark_invalid_virtual_key_error(exception: ProxyException, is_invalid_virtual_key: bool) -> ProxyException:

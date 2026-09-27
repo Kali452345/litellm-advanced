@@ -215,6 +215,7 @@ class DBSpendUpdateWriter:
         start_time: datetime | None,
         end_time: datetime | None,
         response_cost: float | None,
+        record_entity_activity: bool = True,
     ) -> None:
         from litellm.proxy.proxy_server import (
             disable_spend_logs,
@@ -281,6 +282,9 @@ class DBSpendUpdateWriter:
                 verbose_proxy_logger.debug(
                     "disable_spend_logs=True. Skipping writing spend logs to db. Other spend updates - Key/User/Team table will still occur."
                 )
+
+            if not record_entity_activity:
+                return
 
             # Single task replaces 11 create_task() calls
             asyncio.create_task(

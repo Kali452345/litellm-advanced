@@ -1,17 +1,23 @@
 
+import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from litellm.litellm_core_utils.internal_call_metadata import MODEL_ACCESS_GROUP_METADATA_KEY
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import ProxyException, UserAPIKeyAuth
+from litellm.proxy.auth.auth_utils import mark_invalid_virtual_key_error
+from litellm.proxy.auth.resolvers.exceptions import KeyNotFoundError
+from litellm.proxy.db.db_spend_update_writer import DBSpendUpdateWriter
 from litellm.proxy.hooks.proxy_track_cost_callback import (
     _get_budget_reservation_from_metadata,
     _ProxyDBLogger,
     _should_track_cost_callback,
     _update_database_and_spend_counters,
 )
+from litellm.proxy.utils import hash_token
 from litellm.types.utils import CallTypes, Usage
 
 
@@ -1446,6 +1452,60 @@ async def test_async_post_call_failure_hook_enriches_auth_error_metadata():
         assert metadata["user_api_key_user_id"] == "my-user-id"
         assert metadata["user_api_key_team_id"] == "my-team-id"
         assert metadata["user_api_key_team_alias"] == "my-team-alias"
+
+
+def _malformed_key_rejection() -> ProxyException:
+    return mark_invalid_virtual_key_error(
+        ProxyException(message="LiteLLM Virtual Key expected.", type="auth_error", param="key", code=401),
+        is_invalid_virtual_key=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("original_exception", "expect_entity_activity"),
+    [
+        pytest.param(KeyNotFoundError("guessed_hash"), False, id="key-not-in-db"),
+        pytest.param(_malformed_key_rejection(), False, id="malformed-key"),
+        pytest.param(
+            ProxyException(message="model not allowed", type="auth_error", param="model", code=401),
+            True,
+            id="real-key-rejected",
+        ),
+    ],
+)
+async def test_async_post_call_failure_hook_keeps_unknown_keys_out_of_entity_activity(
+    original_exception: Exception, expect_entity_activity: bool
+):
+    """
+    A flood of guessed keys once wrote one daily-spend row per guess, and the Virtual Keys
+    page then grouped ~90k fake keys and exhausted the proxy's memory. A rejected guess still
+    gets its spend-log row, but must not become a key/user/team/tag aggregate.
+    """
+    writer = DBSpendUpdateWriter()
+    logging_obj = SimpleNamespace(db_spend_update_writer=writer)
+    prisma = MagicMock()
+    prisma.spend_log_transactions = []
+    prisma._spend_log_transactions_lock = asyncio.Lock()
+    prisma.tool_usage_transactions = []
+    prisma._tool_usage_transactions_lock = asyncio.Lock()
+    key_lookup = AsyncMock(return_value=None)
+
+    with (
+        patch("litellm.proxy.proxy_server.proxy_logging_obj", logging_obj),  # test-quality-ok: no injection seam
+        patch("litellm.proxy.proxy_server.prisma_client", prisma),  # test-quality-ok: no injection seam
+        patch("litellm.proxy.proxy_server.disable_spend_logs", False),  # test-quality-ok: no injection seam
+        patch("litellm.proxy.hooks.proxy_track_cost_callback.get_key_object", key_lookup),  # test-quality-ok: no DB
+    ):
+        await _ProxyDBLogger().async_post_call_failure_hook(
+            request_data={"model": "claude-3-5-sonnet-20241022", "metadata": {}, "litellm_params": {}},
+            original_exception=original_exception,
+            user_api_key_dict=UserAPIKeyAuth(api_key="sk-guessed", user_id="", team_id=None),
+        )
+        await asyncio.gather(*(t for t in asyncio.all_tasks() if t is not asyncio.current_task()))
+
+    assert [row["api_key"] for row in prisma.spend_log_transactions] == [hash_token("sk-guessed")]
+    assert writer.daily_spend_update_queue.update_queue.qsize() == (1 if expect_entity_activity else 0)
 
 
 @pytest.mark.asyncio

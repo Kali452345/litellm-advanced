@@ -20,6 +20,7 @@ from litellm.proxy.auth.auth_checks import (
     get_team_object,
     log_db_metrics,
 )
+from litellm.proxy.auth.auth_utils import is_unknown_key_rejection
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.db.db_spend_update_writer import (
     debitable_model_access_groups,
@@ -130,12 +131,15 @@ class _ProxyDBLogger(CustomLogger):
         )
         _metadata["error_information"] = _error_information
 
-        _metadata = await _ProxyDBLogger._enrich_failure_metadata_with_key_info(
-            metadata=_metadata,
+        unknown_key: Final = is_unknown_key_rejection(original_exception)
+        failure_metadata: Final = (
+            _metadata
+            if unknown_key
+            else await _ProxyDBLogger._enrich_failure_metadata_with_key_info(metadata=_metadata)
         )
 
         existing_metadata: Final[dict] = request_data.get("metadata", None) or {}
-        existing_metadata.update(_metadata)
+        existing_metadata.update(failure_metadata)
 
         litellm_metadata_bucket: Final = request_data.get("litellm_metadata")
         if (
@@ -216,6 +220,7 @@ class _ProxyDBLogger(CustomLogger):
             start_time=actual_start_time,
             end_time=datetime.now(),
             org_id=user_api_key_dict.org_id,
+            record_entity_activity=not unknown_key,
         )
 
     @log_db_metrics

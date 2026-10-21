@@ -1,50 +1,76 @@
 # Render as extra egress
 
 Anonymous free-tier quota is keyed to the egress IP, so one server IP is one
-allowance. A Render Free web service gives you another IP for $0. This page sets
-that up without touching the LiteLLM config: the instance runs `ocproxy` in
-`--no-direct` relay mode, and the litellm host adds it to `egress.txt` like any
-other tunnel.
+allowance. A Render Free web service gives you another IP for $0: the instance
+runs `ocproxy` and the router treats it as a second deployment of the same model.
 
-Two things to know before you start:
+Render sits behind Cloudflare, which answers `CONNECT` with `400`, so a Render
+instance is **not** a raw proxy — it is used as a plain OpenAI endpoint, and
+`egress.txt` is not involved. Hosts that do speak `CONNECT` (another VPS via
+`tunnels.sh`) still go through `egress.txt` instead.
 
-- Render Free web services **spin down after 15 minutes with no inbound traffic**
-  and take about a minute to come back. The cron job below is what keeps it awake.
-- Render's egress is a shared cloud range. Some datacenter ranges get `403
-  FreeTierError` from the gateway. **Test step 4 before building more of these.**
+Three constraints before you start:
 
-Each service stays inside the 750 free instance-hours per month only if it runs
-alone (744 h). A second always-awake relay needs a paid plan or a part-time
-schedule on one of them.
+- Free web services **spin down after 15 minutes with no inbound traffic** and
+  take about a minute to return. The cron below keeps the instance awake.
+- Render egress is a shared cloud range. Some ranges get `403 FreeTierError`.
+  **Check step 4 before adding more.**
+- 750 free instance-hours per month, per workspace. One always-awake service is
+  ~744 h, so keep exactly one and suspend the rest.
 
-## 1. Put the repo on GitHub
+## 1. Deploy
 
-Render builds from git. Push this project (the `ocproxy/` directory is all that
-gets built, via `dockerContext`).
+Blueprint (needs a card on file in some workspaces):
 
-## 2. Create the Blueprint
+```
+https://dashboard.render.com/blueprint/new?repo=https://github.com/Kali452345/litellm-advanced
+```
 
-Render dashboard → **New → Blueprint** → pick the repo → Blueprint Path
-`ocproxy/render.yaml` → apply.
-
-`OC_KEY` is asked for and left blank in git. Generate it on the litellm host:
+Set **Blueprint Path** to `ocproxy/render.yaml`. `OC_KEY` is `sync: false`, so
+Render prompts for it. Generate one on the litellm host:
 
 ```bash
 openssl rand -hex 24
 ```
 
-Paste it into the Render env var field. Keep it; the cron needs the same value.
+The CLI path used for this deployment bypassed the card gate:
 
-Region matters: put the service in the region closest to you, not to the
-litellm host — the relay hops add to every request.
+```bash
+render services create --type web_service --name ocproxy-egress-1 --runtime docker \
+  --plan free --region frankfurt --repo https://github.com/Kali452345/litellm-advanced \
+  --branch litellm_quota_foundation --root-directory ocproxy \
+  --health-check-path /healthz --env-var "OC_KEY=<key>" --confirm
+```
 
-## 3. Register the host and the cron
+Afterwards set the start command, because the CLI cannot pass it for Docker:
 
-On the litellm host:
+```bash
+MSYS_NO_PATHCONV=1 render services update <srv-id> --health-check-path /healthz
+curl -X PATCH -H "authorization: Bearer <token>" -H 'content-type: application/json' \
+  -d '{"serviceDetails":{"envSpecificDetails":{"dockerCommand":"node serve.mjs --host 0.0.0.0"}}}' \
+  https://api.render.com/v1/services/<srv-id>
+```
+
+## 2. Register it as a deployment
+
+`config.yaml` carries the second entry; only the key is environment-specific:
+
+```yaml
+  - model_name: deepseek-v4.1-flash-free
+    litellm_params:
+      model: openai/deepseek-v4.1-flash-free
+      api_base: https://<service>.onrender.com/v1
+      api_key: os.environ/RENDER_OC_KEY
+```
+
+`RENDER_OC_KEY` goes in the litellm host's `.env`, next to `OC_KEY`. Set
+`STORE_MODEL_IN_DB=False` or the DB copy of the model list wins over the file.
+
+## 3. Keep it awake
 
 ```bash
 install -d ~/.config/ocproxy
-printf 'ocproxy-egress-1.onrender.com %s\n' '<the OC_KEY you pasted>' >> ~/.config/ocproxy/render-hosts
+printf '%s %s ping\n' <service>.onrender.com <key> >> ~/.config/ocproxy/render-hosts
 chmod 600 ~/.config/ocproxy/render-hosts
 crontab -e
 ```
@@ -53,41 +79,24 @@ crontab -e
 */5 * * * * OC_RENDER_HOSTS=$HOME/.config/ocproxy/render-hosts $HOME/litellm-advanced/ocproxy/render-keepalive.sh >> $HOME/render-keepalive.log 2>&1
 ```
 
-Five minutes is safely inside the 15-minute spin-down window. The script pings
-`/healthz` (unauthenticated on purpose), appends the relay to `egress.txt` when
-it is healthy, and removes it after three consecutive failures — slow enough to
-ride out a cold start.
+`ping` mode only keeps the instance warm. Use `egress` mode (third column) for a
+host that speaks `CONNECT`; that mode also writes the entry to `egress.txt` and
+drops it after three consecutive failures.
 
-`egress.txt` is hot-reloaded by the running `ocproxy`, so no restart is needed.
-Check it took:
+## 4. Verify
 
 ```bash
-tail -3 ~/litellm-advanced/egress.txt
-docker exec litellm-advanced-ocproxy-1 sh -c 'wget -qO- --header="authorization: Bearer $OC_KEY" http://127.0.0.1:8788/healthz'
+curl -s -o /dev/null -w '%{http_code}\n' https://<service>.onrender.com/healthz
+curl -s https://<service>.onrender.com/v1/chat/completions \
+  -H "authorization: Bearer <key>" -H 'content-type: application/json' \
+  -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":4}'
 ```
 
-`proxies` should now be at least 1.
+A `200` with real content means that IP is accepted. `403` means the range is
+refused — recreate the service (new IP) or change region. `429
+FreeUsageLimitError` means it works but its allowance is spent.
 
-## 4. Verify the egress is actually usable
+## Tear down
 
-A tunnel that connects is not the same as an IP the gateway accepts:
-
-```bash
-docker compose -f ~/litellm-advanced/docker-compose.prod.yml exec ocproxy \
-  sh -c 'grep -i "static-probe\|connect" /data/ocproxy.jsonl | tail -5'
-```
-
-- `static-probe status 200` → the Render IP works, keep it.
-- `403` → that IP is on a blocked range. Recreate the service (new IP) or move
-  region, then re-check.
-- `429` → it works but is already spent; still useful once it resets.
-
-## Notes
-
-- Requests still try the server IP first. The relay is only used after the server
-  IP returns 429/403, so it does not add latency to normal calls.
-- `OC_CONNECT_ALLOW` keeps the relay closed: only `opencode.ai:443` is tunnelled.
-- `--no-direct` is implicit in that setup — the instance would otherwise spend the
-  Render central IP instead of its own.
-- Tear down with Blueprint → delete, then remove the line from `render-hosts`; the
-  cron drops it from `egress.txt` on the next run.
+Delete the Blueprint/service, remove its `model_list` entry, drop the line from
+`render-hosts`, and remove `RENDER_OC_KEY` from `.env`.

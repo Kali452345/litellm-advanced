@@ -4,9 +4,16 @@
 #
 #   */5 * * * * OC_RENDER_HOSTS=/etc/ocproxy/render-hosts ~/litellm-advanced/ocproxy/render-keepalive.sh >> /var/log/render-keepalive.log 2>&1
 #
-# /etc/ocproxy/render-hosts holds one line per relay:  <host> <key>
-# A relay that answers /healthz 200 is added to egress.txt; after FAILS_BEFORE_DROP
-# consecutive failures it is removed again. Render free instances spin down after
+# /etc/ocproxy/render-hosts holds one line per relay:  <host> <key> [mode]
+#
+# mode=ping (default) keeps the instance awake only. Render sits behind
+# Cloudflare, which answers CONNECT with 400, so a Render instance cannot act as
+# an egress proxy; it is reached as a normal OpenAI endpoint and registered as a
+# second litellm deployment instead.
+#
+# mode=egress also publishes the host to egress.txt. Use it for hosts that do
+# speak CONNECT (another VPS behind tunnels.sh). The entry is dropped after
+# FAILS_BEFORE_DROP consecutive failures. Render free instances spin down after
 # 15 minutes without inbound traffic, and a cold start takes about a minute, so the
 # drop is deliberately slow.
 set -uo pipefail
@@ -39,10 +46,11 @@ drop_line() {
   mv "$EGRESS_FILE.tmp" "$EGRESS_FILE"
 }
 
-while read -r host key; do
+while read -r host key mode; do
   [ -n "${host:-}" ] && [ -n "${key:-}" ] || continue
   case "$host" in \#*) continue ;; esac
   host="${host#https://}"; host="${host%/}"
+  mode="${mode:-ping}"
 
   # the URL form ocproxy dials: https://KEY:x@host:443
   line="https://${key}:x@${host}:443"
@@ -54,6 +62,7 @@ while read -r host key; do
 
   if [ "$code" = "200" ]; then
     echo 0 > "$fails_file"
+    [ "$mode" = "egress" ] || continue
     grep -qF -- "$line" "$EGRESS_FILE" || {
       printf '# %s %s\n%s\n' "$MARKER" "$host" "$line" >> "$EGRESS_FILE"
       echo "$(date -Is) $(printf '%q' "$host") awake -> added to egress"
@@ -62,7 +71,7 @@ while read -r host key; do
     fails=$((fails + 1))
     echo "$fails" > "$fails_file"
     echo "$(date -Is) $(printf '%q' "$host") health $code (fail $fails/$FAILS_BEFORE_DROP)"
-    if [ "$fails" -ge "$FAILS_BEFORE_DROP" ]; then
+    if [ "$fails" -ge "$FAILS_BEFORE_DROP" ] && [ "$mode" = "egress" ]; then
       drop_line "$line" "$host"
       echo "$(date -Is) $(printf '%q' "$host") dropped from egress"
     fi

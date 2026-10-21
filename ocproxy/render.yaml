@@ -1,7 +1,11 @@
-# Render Blueprint for a single ocproxy egress relay.
+# Render Blueprint for a single ocproxy egress endpoint.
 #
-# Point Render at this file (Blueprint Path: ocproxy/render.yaml). Each deployed
-# instance gives one extra egress IP that the litellm box can add to egress.txt.
+# Point Render at this file (Blueprint Path: ocproxy/render.yaml). Each instance
+# gives one extra egress IP: anonymous quota is per IP, so it is registered as a
+# second litellm deployment of the same model and the router fails across them.
+#
+# Cloudflare fronts Render and answers CONNECT with 400, so the instance is used
+# as an OpenAI endpoint, not as a raw proxy. See RENDER.md.
 #
 # The litellm host runs the keepalive cron (render-keepalive.sh), because a Free
 # web service spins down after 15 minutes without inbound traffic and cron jobs

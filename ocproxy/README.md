@@ -71,9 +71,10 @@ node serve.mjs --port 8788 --key "$OC_KEY" --static-file egress.txt
 ```
 
 Any instance also speaks `CONNECT` (Basic auth with the key as either half of
-`user:pass`), so a host running it can be used as an egress proxy by another one.
-`egress.txt` takes those as `https://KEY:x@host:443`. `RENDER.md` sets that up on
-Render.
+`user:pass`), so one host can be another's egress proxy via `egress.txt` as
+`https://KEY:x@host:443`. Hosts behind a CDN that drops `CONNECT` (Render,
+Cloudflare) are used as plain OpenAI endpoints instead and registered as extra
+litellm deployments. `RENDER.md` covers that.
 
 To add the free public pool as a backstop, harvest and pass the harvested file:
 

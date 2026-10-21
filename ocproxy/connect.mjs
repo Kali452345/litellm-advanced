@@ -15,8 +15,11 @@ export function parseProxy(raw) {
   }
   const proto = u.protocol.replace(":", "").toLowerCase()
   if (!["http", "https", "socks5", "socks5h", "socks4", "socks4a"].includes(proto)) return null
-  if (!u.hostname || !u.port) return null
-  const port = Number(u.port)
+  if (!u.hostname) return null
+  // the URL parser drops a port that equals the scheme default, so an
+  // `https://host:443` entry arrives with an empty port
+  const DEFAULT_PORT = { http: 80, https: 443, socks5: 1080, socks5h: 1080, socks4: 1080, socks4a: 1080 }
+  const port = u.port ? Number(u.port) : DEFAULT_PORT[proto] || 0
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null
   const hostPort = `${u.hostname}:${port}`
   const auth = u.username ? `${encodeURIComponent(u.username)}:${encodeURIComponent(u.password)}@` : ""

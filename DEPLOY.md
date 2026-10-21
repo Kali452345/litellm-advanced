@@ -46,10 +46,10 @@ git clone https://github.com/Kali452345/litellm-advanced.git && cd litellm-advan
 ```
 
 2. Write `.env` next to the compose file. Compose reads it for interpolation, and these
-   three lines are all it needs:
+   four lines are all it needs:
 
 ```bash
-printf 'LITELLM_MASTER_KEY=sk-%s\nLITELLM_SALT_KEY=sk-%s\nPOSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+printf 'LITELLM_MASTER_KEY=sk-%s\nLITELLM_SALT_KEY=sk-%s\nPOSTGRES_PASSWORD=%s\nOC_KEY=sk-oc-%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
 ```
 
    `LITELLM_SALT_KEY` encrypts the provider keys the dashboard stores in the database.
@@ -70,15 +70,37 @@ printf 'UI_USERNAME=%s\nUI_PASSWORD=%s\n' "someone" "$(openssl rand -base64 18)"
 
 3. Write the `config.yaml` the compose file mounts. It is gitignored, so a fresh clone does
    not carry one, and Docker turns a missing bind source into a directory rather than
-   telling you:
+   telling you. The checkout deliberately ships the version below (it wires the free
+   OpenCode models to the `ocproxy` sidecar), so copy it rather than retyping:
 
 ```bash
-printf 'general_settings:\n  store_model_in_db: true\n\nrouter_settings:\n  enable_quota_routing: true\n  quota_max_wait_seconds: 75\n  num_retries: 3\n\nlitellm_settings:\n  drop_params: true\n' > config.yaml
+cp config.yaml.example config.yaml   # when the checkout has no config.yaml
 ```
 
-   `num_retries` bounds how many keys one request may walk, so a pool deeper than four
-   wants a higher number. Everything else, the providers, their keys and the per-minute and
-   per-day caps, is added through the dashboard and lives in the database
+   If you are building the file from scratch, the minimum that carries the free models is:
+
+```yaml
+general_settings:
+  store_model_in_db: true
+router_settings:
+  enable_quota_routing: true
+  quota_max_wait_seconds: 75
+  num_retries: 2
+litellm_settings:
+  drop_params: true
+model_list:
+  - model_name: big-pickle
+    litellm_params:
+      model: openai/big-pickle
+      api_base: http://ocproxy:8788/v1
+      api_key: os.environ/OC_KEY
+      timeout: 600
+```
+
+   `num_retries` bounds how many keys one request may walk. The free models go through a
+   proxy pool that does its own retrying (see `ocproxy/README.md`), so keep it shallow.
+   Everything else, the paid providers, their keys and the per-minute and per-day caps, is
+   added through the dashboard and lives in the database
 
 4. Build and start it. The first build takes several minutes and boot then applies every
    migration before the port answers:
@@ -88,6 +110,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 5. Watch it come up:
+
 
 ```bash
 docker compose -f docker-compose.prod.yml logs -f litellm
@@ -100,6 +123,55 @@ curl -s http://127.0.0.1:4000/health/readiness
 ```
 
 `{"status":"healthy","db":"connected"}` means the stack is up
+
+## The free OpenCode pool (`ocproxy`)
+
+The `ocproxy` service is built from `./ocproxy` and started by `docker compose up`
+next to Postgres. It never publishes a port; only the litellm container reaches it
+over the compose network. It supplies the client fingerprint and uses the server's
+own egress IP, which is the fastest and most stable option
+
+`egress.txt` is read on boot and every proxy line in it is gate-probed; only 200s are
+used. That is where extra VPS tunnels (`ocproxy/tunnels.sh`) or VPN sidecars go when
+you add them. Entries are static and hot-reloaded, so the running service picks them
+up without a restart. While `egress.txt` is empty, everything uses the server IP
+
+`ocproxy/RENDER.md` covers putting relays on Render's free tier with the
+`render-keepalive.sh` cron, for extra egress IPs without another VPS.
+
+The free public harvest is optional and off by default because of its low yield: most
+public proxies are datacenter ranges the gateway returns 403 for. To switch it back
+on, add `--proxy-file /data/proxies.txt --free-proxies` to the `ocproxy` command.
+The README covers the measured results and tuning knobs
+
+```bash
+docker compose -f docker-compose.prod.yml logs -f ocproxy
+docker compose -f docker-compose.prod.yml exec ocproxy node -e \
+  "fetch('http://127.0.0.1:8788/pool',{headers:{authorization:'Bearer '+process.env.OC_KEY}}).then(r=>r.json()).then(j=>console.log(j.size,j.healthy))"
+```
+
+Useful knobs live in `.env`: `OC_POOL_INTERVAL` (default 1800 s), `OC_MAX_ATTEMPTS`
+(default 6), `OC_LIMITED_MS` (429 cooldown, default 6 h), `OC_POOL_MAX_CANDIDATES`,
+and `OC_POOL_TARGET` (default 25 working proxies; below it the harvester retries
+every 60 s instead of every 30 min).
+A bigger `OC_POOL_MAX_CANDIDATES` costs more probe traffic and finds more working IPs
+
+To publish the free models through LiteLLM, create a virtual key in the dashboard
+whose model list includes them. The master key reaches them directly:
+
+```bash
+curl -s http://127.0.0.1:4000/v1/chat/completions \
+  -H "authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"model":"big-pickle","messages":[{"role":"user","content":"hi"}]}'
+```
+
+`ocproxy` is anonymous by default: no OpenCode account is involved and no token is
+sent. To bill an account instead, set `OC_TOKEN` and `OC_ORG` on the service; the
+account bucket is still gated by the egress IP's abusive-traffic verdict
+
+The pool data lives in the `litellm_advanced_ocproxy_data` volume and is
+disposable. `docker compose -f docker-compose.prod.yml down` leaves it intact
 
 ## Reaching the dashboard and pointing a harness at it
 

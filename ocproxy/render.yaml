@@ -1,0 +1,32 @@
+# Render Blueprint for a single ocproxy egress relay.
+#
+# Point Render at this file (Blueprint Path: ocproxy/render.yaml). Each deployed
+# instance gives one extra egress IP that the litellm box can add to egress.txt.
+#
+# The litellm host runs the keepalive cron (render-keepalive.sh), because a Free
+# web service spins down after 15 minutes without inbound traffic and cron jobs
+# on Render are billed separately.
+services:
+  - type: web
+    name: ocproxy-egress-1
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: litellm_quota_foundation
+    dockerContext: ocproxy
+    dockerfilePath: ocproxy/Dockerfile
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    # no proxy file: this instance IS the egress, so it serves direct-only
+    dockerCommand: node serve.mjs --host 0.0.0.0
+    envVars:
+      # generated on the litellm host; see RENDER.md
+      - key: OC_KEY
+        sync: false
+      # CONNECT is refused for anything else, so this stays a closed relay
+      - key: OC_CONNECT_ALLOW
+        value: opencode.ai:443
+      - key: OC_MODELS
+        value: deepseek-v4.1-flash-free
+      - key: NODE_ENV
+        value: production

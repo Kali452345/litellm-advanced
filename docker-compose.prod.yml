@@ -33,6 +33,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      ocproxy:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
@@ -41,6 +43,54 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
+
+  # OpenCode free-tier bridge: owns the fingerprint, walks free egress proxies.
+  # No published port; only the litellm container calls it.
+  ocproxy:
+    build:
+      context: ./ocproxy
+    image: ocproxy:local
+    restart: unless-stopped
+    command:
+      - "node"
+      - "serve.mjs"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8788"
+      - "--static-file"
+      - "/data/egress.txt"
+      - "--log"
+      - "/data/ocproxy.jsonl"
+    environment:
+      - OC_KEY=${OC_KEY:?set OC_KEY in .env}
+      - OC_MAX_ATTEMPTS=${OC_MAX_ATTEMPTS:-6}
+      - OC_LIMITED_MS=${OC_LIMITED_MS:-21600000}
+      - OC_POOL_INTERVAL=${OC_POOL_INTERVAL:-1800}
+      - OC_POOL_MAX_CANDIDATES=${OC_POOL_MAX_CANDIDATES:-6000}
+      - OC_POOL_TARGET=${OC_POOL_TARGET:-25}
+      - OC_POOL_CONCURRENCY=${OC_POOL_CONCURRENCY:-200}
+      # optional account mode and model override
+      - OC_TOKEN
+      - OC_ORG
+      - OC_MODELS=${OC_MODELS:-deepseek-v4.1-flash-free}
+      - OC_STATIC_FILE=/data/egress.txt
+    volumes:
+      - ocproxy_data:/data
+      - ./egress.txt:/data/egress.txt:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   db:
     image: postgres:16-alpine
@@ -76,6 +126,8 @@ services:
 volumes:
   db_data:
     name: litellm_advanced_db_data
+  ocproxy_data:
+    name: litellm_advanced_ocproxy_data
   caddy_data:
     name: litellm_advanced_caddy_data
   caddy_config:

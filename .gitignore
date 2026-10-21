@@ -150,3 +150,7 @@ litellm.log
 
 # the deployed Caddyfile names one server; Caddyfile.example is the committed one
 /Caddyfile
+
+# ocproxy harvest output
+ocproxy/proxies.txt
+ocproxy/proxies.txt.tmp

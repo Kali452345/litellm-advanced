@@ -13,6 +13,7 @@ import json
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
@@ -233,7 +234,7 @@ class InMemoryCache(BaseCache):
     async def async_get_cache(self, key, **kwargs):
         return self.get_cache(key=key, **kwargs)
 
-    async def async_batch_get_cache(self, keys: list, **kwargs):
+    async def async_batch_get_cache(self, keys: Sequence[str], **kwargs):
         return_val: Final = []
         for k in keys:
             val = self.get_cache(key=k, **kwargs)

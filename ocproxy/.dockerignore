@@ -1,0 +1,5 @@
+data/
+proxies.txt
+proxies.txt.tmp
+node_modules/
+npm-debug.log*

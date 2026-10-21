@@ -266,6 +266,72 @@ curl -X POST 'http://0.0.0.0:4000/v1/chat/completions' \
 
 </details>
 
+### Multiple API keys per model (Key Rotation)
+
+Pool several API keys behind one model name and rotate between them. Requests go to the first key with room, fail over across keys and providers inside the same call, and are never sent to a key whose per-minute (`rpm`) or per-day (`rpd`) allowance is spent. The caller asks for one model name and sees one answer.
+
+`rpm` and `rpd` become hard caps only when the router is built with `enable_quota_routing`. Without it, `rpm` keeps its older meaning as a simple-shuffle weight, and the proxy logs a warning at startup if any deployment declares quota params while the flag is off:
+
+```yaml
+router_settings:
+  enable_quota_routing: true
+  quota_max_wait_seconds: 75
+
+model_list:
+  - model_name: fast
+    litellm_params:
+      model: gemini/gemini-3.7-flash
+      api_key: os.environ/GEMINI_KEY_ONE
+      rpm: 10
+      rpd: 250
+  - model_name: fast
+    litellm_params:
+      model: gemini/gemini-3.7-flash
+      api_key: os.environ/GEMINI_KEY_TWO
+      rpm: 10
+      rpd: 250
+  - model_name: fast
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_KEY_ONE
+      rpm: 30
+      rpd: 1000
+```
+
+Three deployments, one public name: requests go to the first pool member with room, and once every Gemini key is spent for the minute the same name keeps working through Groq. When every key is spent and a minute window rolls over within `quota_max_wait_seconds`, the request is held rather than failed; a day cap never resolves inside that budget, so it fails fast. Keys walked per request is `num_retries + 1`, so raise `num_retries` for a pool deeper than that.
+
+#### The deployment params
+
+| Param | What it does |
+| --- | --- |
+| `rpm` | Requests one credential may make per minute. Also readable from `model_info.rpm` or the top-level `rpm` |
+| `rpd` | Requests one credential may make per calendar day |
+| `quota_reset_timezone` | Which zone's midnight ends the day window, as an IANA name like `America/Los_Angeles`. Defaults to UTC. Minute windows ignore it |
+| `quota_scope` | `credential_model` (the default) meters each model of a key separately, which is what a provider that publishes a per-model limit does. `credential` meters a key's whole allowance across every model it serves |
+| `quota_scope_id` | Says two deployments spend from one account, so they share one counter. Set it when the same key reaches a provider at two base urls, or when two keys belong to one metered account |
+
+#### Admin UI
+
+- **Provider Keys** tab under Models + Endpoints — one row per provider and base url, with an Add key form prefilled from the profile, so putting another key behind a provider is a paste rather than a retype.
+- **Add another key** on every model row — opens the same form already pointed at that deployment's provider with only the clicked model picked.
+- **Requests Per Minute** and **Requests Per Day** on Add Model — first-class fields; the first deployment of a provider is what later keys inherit their caps from.
+- **Key Rotation** page — a card per pool with a meter per window on every key, plus a Rotation settings card that toggles enforcement and sets the hold budget through `POST /config/update`, with no restart.
+- **Test the limit** — measures a cap the provider does not publish by sending requests to one key until the provider refuses one, then offers the accepted count for the cap fields.
+
+#### API endpoints
+
+- `GET /provider/profiles` — what each provider is already set up with.
+- `POST /provider/keys` — put another key behind a provider, one deployment per model that provider serves.
+- `GET /model/quota/usage` — every pool, every key in it, and what each key has spent against each window it meters.
+- `POST /provider/rate_limit/probe` — measure one key's per-minute cap by spending it (proxy-admin only).
+- `GET /provider/rate_limit/observed` — caps read back out of the rate limit refusals already logged.
+
+#### Known gaps
+
+Enforcement is async-only: the sync selection paths (`get_available_deployment`, pass-through selection, the `specific_deployment` and encrypted-content-affinity early returns) and the `usage-based-routing` v1 and `lar1` strategies select without a reservation step. Usage reads are advisory — `GET /model/quota/usage` and the pre-routing filter can be a request stale, which is why the reservation on the way into the provider call is the authority on whether a request fits.
+
+See [`litellm/router_utils/quota/README.md`](litellm/router_utils/quota/README.md) for the full operator writeup and [`PHASES.md`](litellm/router_utils/quota/PHASES.md) for the phase-by-phase engineering record.
+
 ### Supported Providers ([Website Supported Models](https://models.litellm.ai/) | [Docs](https://docs.litellm.ai/docs/providers))
 
 | Provider                                                                            | `/chat/completions` | `/messages` | `/responses` | `/embeddings` | `/image/generations` | `/audio/transcriptions` | `/audio/speech` | `/moderations` | `/batches` | `/rerank` |

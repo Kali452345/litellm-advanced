@@ -93,6 +93,7 @@ const alwaysMounted = {
 
 const advancedOpenExtras = {
   guardrails: undefined,
+  quota_scope: "credential_model",
   tags: undefined,
   use_in_pass_through: undefined,
   vector_store_ids: undefined,
@@ -155,7 +156,7 @@ describe("AddModelPanel submit payload contract", () => {
     });
   });
 
-  it("registers four more keys as undefined once Advanced Settings opens", async () => {
+  it("registers the advanced keys once Advanced Settings opens, counting the caps per model", async () => {
     const { openAdvanced, fillRequired, submit } = await setup();
     await fillRequired();
     await openAdvanced();
@@ -164,6 +165,20 @@ describe("AddModelPanel submit payload contract", () => {
     expect(lastCreatedModel()).toStrictEqual({
       model_name: "gpt-4o",
       litellm_params: { ...alwaysMounted, ...advancedOpenExtras },
+      model_info: { ...baseModelInfo },
+    });
+  });
+
+  it("counts the caps once for the whole key when its models are said to share an allowance", async () => {
+    const { user, openAdvanced, fillRequired, submit } = await setup();
+    await fillRequired();
+    await openAdvanced();
+    await user.click(screen.getByRole("radio", { name: /Shared across models/ }));
+    await submit();
+
+    expect(lastCreatedModel()).toStrictEqual({
+      model_name: "gpt-4o",
+      litellm_params: { ...alwaysMounted, ...advancedOpenExtras, quota_scope: "credential" },
       model_info: { ...baseModelInfo },
     });
   });

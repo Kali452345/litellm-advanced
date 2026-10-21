@@ -69,15 +69,27 @@ async def send_llm_exception_alert(
 
 
 async def async_raise_no_deployment_exception(
-    litellm_router_instance: LitellmRouter, model: str, parent_otel_span: Span | None
+    litellm_router_instance: LitellmRouter,
+    model: str,
+    parent_otel_span: Span | None,
+    quota_reset_seconds: int | None = None,
 ):
     """
     Raises a RouterRateLimitError if no deployment is found for the given model.
+
+    `quota_reset_seconds` wins over the cooldown when the group ran out of quota
+    rather than out of healthy deployments: the counters know the exact second the
+    window rolls over, so the caller is told to come back then instead of after an
+    unrelated cooldown that says nothing about this pool.
     """
     verbose_router_logger.info("get_available_deployment for model: %s, No deployment available", model)
     model_ids: Final = litellm_router_instance.get_model_ids(model_name=model)
-    _cooldown_time: Final = litellm_router_instance.cooldown_cache.get_min_cooldown(
-        model_ids=model_ids, parent_otel_span=parent_otel_span
+    _cooldown_time: Final = (
+        float(quota_reset_seconds)
+        if quota_reset_seconds is not None
+        else litellm_router_instance.cooldown_cache.get_min_cooldown(
+            model_ids=model_ids, parent_otel_span=parent_otel_span
+        )
     )
     _cooldown_list: Final = await _async_get_cooldown_deployments_with_debug_info(
         litellm_router_instance=litellm_router_instance,

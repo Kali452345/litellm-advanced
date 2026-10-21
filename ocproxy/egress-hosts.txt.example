@@ -1,0 +1,5 @@
+# Fast private egress hosts, one [user@]host[:port] per line.
+# Each line becomes a SOCKS tunnel, is gate-probed, and only a 200 is published.
+# Example:
+#   ubuntu@203.0.113.10
+#   root@198.51.100.7:2222

@@ -43,8 +43,8 @@ const ModelConnectionTest: React.FC<ModelConnectionTestProps> = ({
     try {
       const result = await prepareModelAddRequest(formValues, accessToken, null);
 
-      if (!result) {
-        setError("Failed to prepare model data. Please check your form inputs.");
+      if (!result?.length) {
+        setError("Pick a model to test, then fill in the credentials for it.");
         setIsSuccess(false);
         setIsLoading(false);
         return;

@@ -23,6 +23,9 @@ const specDir = mkdtempSync(join(tmpdir(), "litellm-openapi-"));
 const specPath = join(specDir, "openapi.json");
 
 const python = (process.env.LITELLM_PYTHON ?? "python3").split(" ");
+// execFileSync spawns without a shell, and since Node 20 that cannot start the .cmd shim
+// Windows needs, so run the generator's own entrypoint instead of the node_modules/.bin shim.
+const openapiTypescript = join(dashboardDir, "node_modules", "openapi-typescript", "bin", "cli.js");
 // The dashboard calls internal UI routes that the public /openapi.json hides via
 // include_in_schema=False. Force them in so they get typed here; this mutates a
 // throwaway interpreter, so the spec the proxy actually serves is unchanged.
@@ -54,7 +57,7 @@ try {
     stdio: "inherit",
   });
 
-  execFileSync(join(dashboardDir, "node_modules", ".bin", "openapi-typescript"), [specPath, "-o", outPath], {
+  execFileSync(process.execPath, [openapiTypescript, specPath, "-o", outPath], {
     cwd: dashboardDir,
     stdio: "inherit",
   });

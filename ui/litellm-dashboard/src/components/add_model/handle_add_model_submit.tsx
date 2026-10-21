@@ -2,6 +2,28 @@ import { toast } from "@/lib/toast";
 import { Model, modelCreateCall } from "../networking";
 import { provider_map } from "../provider_info_helpers";
 import { ptuPickerToUtcIso } from "../../utils/ptuDatetime";
+import {
+  DEFAULT_TEMPERATURE_MODE,
+  PINNED_TEMPERATURE_FIELD,
+  TEMPERATURE_MODE_FIELD,
+  temperatureOverrideParams,
+  type TemperatureMode,
+} from "@/lib/temperatureMode";
+
+const applyTemperatureOverride = (formValues: Record<string, any>, litellmParamsObj: Record<string, any>): void => {
+  const overrides = temperatureOverrideParams(
+    (formValues[TEMPERATURE_MODE_FIELD] as TemperatureMode | undefined) ?? DEFAULT_TEMPERATURE_MODE,
+    String(formValues[PINNED_TEMPERATURE_FIELD] ?? ""),
+    litellmParamsObj,
+  );
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === null) {
+      delete litellmParamsObj[key];
+    } else {
+      litellmParamsObj[key] = value;
+    }
+  }
+};
 
 export const prepareModelAddRequest = async (formValues: Record<string, any>, accessToken: string, form: any) => {
   try {
@@ -95,6 +117,9 @@ export const prepareModelAddRequest = async (formValues: Record<string, any>, ac
         if (key === "custom_pricing" || key === "pricing_model" || key === "cache_control") {
           continue;
         }
+        if (key === TEMPERATURE_MODE_FIELD || key === PINNED_TEMPERATURE_FIELD) {
+          continue;
+        }
         if (key == "model_name") {
           litellmParamsObj["model"] = value;
         } else if (key == "custom_llm_provider") {
@@ -164,6 +189,14 @@ export const prepareModelAddRequest = async (formValues: Record<string, any>, ac
           continue;
         }
 
+        // Handle the per-credential request caps
+        else if (key === "rpm" || key === "rpd") {
+          if (value !== undefined && value !== null && value !== "") {
+            litellmParamsObj[key] = Number(value);
+          }
+          continue;
+        }
+
         // Handle the PTU flat-cost fields (attributed to the team via model_info)
         else if (key === "ptu_count" || key === "cost_per_ptu_per_hour") {
           if (value !== undefined && value !== null && value !== "") {
@@ -187,6 +220,8 @@ export const prepareModelAddRequest = async (formValues: Record<string, any>, ac
           litellmParamsObj[key] = value;
         }
       }
+
+      applyTemperatureOverride(formValues, litellmParamsObj);
 
       deployments.push({ litellmParamsObj, modelInfoObj, modelName });
     }

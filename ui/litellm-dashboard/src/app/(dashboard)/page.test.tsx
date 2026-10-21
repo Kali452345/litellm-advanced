@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import CreateKeyPage from "./page";
+import DashboardLandingPage from "./page";
 
 interface KeyRow {
   token: string;
@@ -37,8 +37,8 @@ vi.mock("@/contexts/AuthContext", () => ({
   }),
 }));
 vi.mock("@/app/(dashboard)/hooks/keys/useKeys", () => ({ useKeys: mockUseKeys }));
-vi.mock("@/app/(dashboard)/api-keys/ApiKeysDashboard", () => ({
-  default: () => <div data-testid="api-keys-dashboard" />,
+vi.mock("@/app/(dashboard)/overview/_components/OverviewView", () => ({
+  OverviewView: () => <div data-testid="overview-view" />,
 }));
 vi.mock("@/components/common_components/LoadingScreen", () => ({
   default: () => <div data-testid="loading-screen" />,
@@ -82,32 +82,32 @@ describe("dashboard landing", () => {
   });
 
   it.each(["Internal User", "Internal Viewer", "Admin", "Admin Viewer", "Org Admin", ""])(
-    "lands a keyless %s on the keys dashboard, never on the MCP connect page",
+    "lands a keyless %s on the overview, never on the MCP connect page",
     (role) => {
       state.userRole = role;
-      render(<CreateKeyPage />);
-      expect(screen.getByTestId("api-keys-dashboard")).toBeInTheDocument();
+      render(<DashboardLandingPage />);
+      expect(screen.getByTestId("overview-view")).toBeInTheDocument();
       expect(screen.queryByTestId("loading-screen")).not.toBeInTheDocument();
       expect(mockReplace).not.toHaveBeenCalled();
       expect(mockMigratedHref).not.toHaveBeenCalledWith("connect");
     },
   );
 
-  it("lands a user who already owns a key on the keys dashboard", () => {
+  it("lands a user who already owns a key on the overview as well", () => {
     state.keys = [{ token: "sk-abc" }];
-    render(<CreateKeyPage />);
-    expect(screen.getByTestId("api-keys-dashboard")).toBeInTheDocument();
+    render(<DashboardLandingPage />);
+    expect(screen.getByTestId("overview-view")).toBeInTheDocument();
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
   it("never looks a user's keys up to decide where the landing goes", () => {
-    render(<CreateKeyPage />);
+    render(<DashboardLandingPage />);
     expect(mockUseKeys).not.toHaveBeenCalled();
   });
 
   it("still sends the user to an explicit stored return URL", () => {
     state.returnUrl = "/ui/models-and-endpoints";
-    render(<CreateKeyPage />);
+    render(<DashboardLandingPage />);
     expect(mockLocationReplace).toHaveBeenCalledWith("http://localhost:3000/ui/models-and-endpoints");
   });
 });

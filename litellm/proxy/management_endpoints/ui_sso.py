@@ -2741,6 +2741,7 @@ async def _sso_return_to_redirect(
     jwt_token: str,
     redis_usage_cache,
     user_api_key_cache,
+    request: Request,
 ) -> RedirectResponse | None:
     """Resolve the post-SSO redirect for a ``return_to``, or None to fall through to the dashboard.
 
@@ -2754,12 +2755,14 @@ async def _sso_return_to_redirect(
     Extracted from ``get_redirect_response_from_openid`` to keep that method inside the complexity
     budget; behavior is identical to the inline arms it replaces (including letting
     ``_validate_return_to`` raise for a mismatched absolute return_to, as before)."""
+    from litellm.proxy.auth.login_utils import set_ui_session_cookie
+
     if return_to is None:
         return None
 
     if _is_same_origin_return_path(return_to):
         redirect_response = RedirectResponse(url=return_to, status_code=303)
-        redirect_response.set_cookie(key="token", value=jwt_token)
+        set_ui_session_cookie(redirect_response, request, jwt_token)
         redirect_response.delete_cookie("litellm_cp_return_to")
         return redirect_response
 
@@ -3616,7 +3619,7 @@ class SSOAuthenticationHandler:
             server_root_path=get_server_root_path(),
         )
 
-        from litellm.proxy.auth.login_utils import encode_ui_session_jwt
+        from litellm.proxy.auth.login_utils import encode_ui_session_jwt, set_ui_session_cookie
 
         jwt_token: Final = encode_ui_session_jwt(returned_ui_token_object, master_key or "")
 
@@ -3628,6 +3631,7 @@ class SSOAuthenticationHandler:
             jwt_token=jwt_token,
             redis_usage_cache=redis_usage_cache,
             user_api_key_cache=user_api_key_cache,
+            request=request,
         )
         if return_to_redirect is not None:
             return return_to_redirect
@@ -3636,7 +3640,7 @@ class SSOAuthenticationHandler:
             litellm_dashboard_ui += "?login=success"
         verbose_proxy_logger.info("Redirecting to %s", litellm_dashboard_ui)
         redirect_response: Final = RedirectResponse(url=litellm_dashboard_ui, status_code=303)
-        redirect_response.set_cookie(key="token", value=jwt_token)
+        set_ui_session_cookie(redirect_response, request, jwt_token)
         return redirect_response
 
     @staticmethod

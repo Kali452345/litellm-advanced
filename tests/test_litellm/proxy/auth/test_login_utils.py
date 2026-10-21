@@ -6,9 +6,12 @@ to login_utils.py for better reusability.
 """
 
 import os
+from http.cookies import Morsel, SimpleCookie
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from starlette.requests import Request
+from starlette.responses import Response
 
 from litellm.constants import LITELLM_PROXY_ADMIN_NAME
 from litellm.proxy._types import (
@@ -598,3 +601,73 @@ class TestEncodeUiSessionJwt:
         request.cookies = {"token": token}
         with patch("litellm.proxy.proxy_server.master_key", "sk-master-for-tests"):
             assert _user_id_from_session_cookie(request) == "cornell-user"
+
+
+class TestSetUiSessionCookie:
+    """The UI session cookie carries a virtual key with the signed-in user's role, so it must be
+    marked Secure whenever the browser will replay it to an https origin. Before this, every login
+    path set it bare, and one plaintext hop through a TLS-terminating proxy leaked the session."""
+
+    @staticmethod
+    def _request(scheme: str, host: str) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": scheme,
+                "path": "/login",
+                "root_path": "",
+                "query_string": b"",
+                "headers": [(b"host", host.encode())],
+                "server": (host, 443 if scheme == "https" else 4000),
+            }
+        )
+
+    @staticmethod
+    def _token_morsel(response: Response) -> Morsel[str]:
+        jar: SimpleCookie = SimpleCookie()
+        for header in response.headers.getlist("set-cookie"):
+            jar.load(header)
+        return jar["token"]
+
+    def test_https_login_marks_the_cookie_secure(self):
+        from fastapi.responses import RedirectResponse
+
+        from litellm.proxy.auth.login_utils import set_ui_session_cookie
+
+        response = RedirectResponse(url="/ui?login=success", status_code=303)
+        with patch.dict(os.environ, {}, clear=True):
+            set_ui_session_cookie(response, self._request("https", "litellm.example.com"), "jwt-abc")
+
+        morsel = self._token_morsel(response)
+        assert morsel.value == "jwt-abc"
+        assert morsel["secure"] is True
+
+    def test_http_login_keeps_the_cookie_usable(self):
+        """An ssh tunnel or a bare http deployment is plain http end to end, and a browser drops a
+        Secure cookie on http, which would bounce the dashboard back to the login form forever."""
+        from fastapi.responses import RedirectResponse
+
+        from litellm.proxy.auth.login_utils import set_ui_session_cookie
+
+        response = RedirectResponse(url="/ui?login=success", status_code=303)
+        with patch.dict(os.environ, {}, clear=True):
+            set_ui_session_cookie(response, self._request("http", "127.0.0.1"), "jwt-abc")
+
+        morsel = self._token_morsel(response)
+        assert morsel.value == "jwt-abc"
+        assert not morsel["secure"]
+
+    def test_https_proxy_base_url_wins_over_an_untrusted_forwarded_scheme(self):
+        """A TLS-terminating proxy that uvicorn is not told to trust leaves the request looking like
+        http, so the operator's declared public origin is what decides the flag."""
+        from fastapi.responses import RedirectResponse
+
+        from litellm.proxy.auth.login_utils import set_ui_session_cookie
+
+        response = RedirectResponse(url="/ui?login=success", status_code=303)
+        with patch.dict(os.environ, {"PROXY_BASE_URL": "https://litellm.example.com"}, clear=True):
+            set_ui_session_cookie(response, self._request("http", "10.0.0.4"), "jwt-abc")
+
+        assert self._token_morsel(response)["secure"] is True

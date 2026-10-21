@@ -1,0 +1,33 @@
+general_settings:
+  store_model_in_db: true
+
+router_settings:
+  enable_quota_routing: true
+  quota_max_wait_seconds: 75
+  # ocproxy walks its own egress pool; keep router retries shallow so a request
+  # does not multiply into hundreds of upstream calls.
+  num_retries: 2
+  fallbacks:
+    - deepseek-v4.1-flash-free: ["GLM-5.3"]
+
+litellm_settings:
+  drop_params: true
+  cache: true
+  cache_params:
+    type: local
+    ttl: 900
+
+# Free OpenCode models, served by the ocproxy sidecar. The sidecar supplies the
+# fingerprint and the rotating egress IPs; LiteLLM only sees a plain
+# OpenAI-compatible endpoint. OC_KEY is the shared bearer between the two.
+model_list:
+  # only free model enabled for this deployment
+  - model_name: deepseek-v4.1-flash-free
+    litellm_params:
+      model: openai/deepseek-v4.1-flash-free
+      api_base: http://ocproxy:8788/v1
+      api_key: os.environ/OC_KEY
+      timeout: 180
+      stream_timeout: 180
+    model_info:
+      mode: chat

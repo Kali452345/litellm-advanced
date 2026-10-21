@@ -40,7 +40,7 @@ from litellm.types.mcp import (
 )
 from litellm.types.mcp_server.mcp_server_manager import MCPInfo
 from litellm.types.proxy.control_plane_endpoints import WorkerRegistryEntry
-from litellm.types.router import RouterErrors, UpdateRouterConfig
+from litellm.types.router import UpdateRouterConfig, router_error_status_code
 from litellm.types.secret_managers.main import KeyManagementSystem
 from litellm.types.utils import (
     CallTypes,
@@ -677,6 +677,10 @@ class LiteLLMRoutes(enum.Enum):
             "/model/update",
             "/model/delete",
             "/model/info",
+            "/model/quota/usage",
+            # provider profiles
+            "/provider/profiles",
+            "/provider/keys",
             "/jwt/key/mapping/new",
             "/jwt/key/mapping/update",
             "/jwt/key/mapping/delete",
@@ -3746,10 +3750,9 @@ class ProxyException(Exception):
         # rules for proxyExceptions
         # Litellm router.py returns "No healthy deployment available" when there are no deployments available
         # Should map to 429 errors https://github.com/BerriAI/litellm/issues/2487
-        if "No healthy deployment available" in self.message or "No deployments available" in self.message:
-            self.code = "429"
-        elif RouterErrors.no_deployments_with_tag_routing.value in self.message:
-            self.code = "401"
+        served_as: Final = router_error_status_code(self.message)
+        if served_as is not None:
+            self.code = served_as
 
     def to_dict(self) -> dict:
         """Converts the ProxyException instance to a dictionary."""

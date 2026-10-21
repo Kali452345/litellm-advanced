@@ -18,4 +18,6 @@ ENV NODE_ENV=production \
 EXPOSE 8788
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD node healthcheck.mjs
 
-CMD ["node", "serve.mjs", "--proxy-file", "/data/proxies.txt", "--free-proxies"]
+# platform-agnostic default: listen on $PORT and use the host IP. The compose
+# service passes --proxy-file/--free-proxies explicitly on top of this.
+CMD ["node", "serve.mjs", "--host", "0.0.0.0"]

@@ -577,9 +577,21 @@ server.on("connect", (req, client, head) => {
     const [u = "", p = ""] = pair.split(":")
     if (u !== opts.key && p !== opts.key && bearer !== opts.key) return fail(407, "Proxy Authentication Required")
   }
-  const [host, portRaw] = String(req.url || "").split(":")
-  const port = Number(portRaw || 443)
-  if (!host || !Number.isInteger(port)) return fail(400, "Bad Request")
+  // edges may forward the authority alone ("host:443") or an absolute URL
+  // ("https://host:443"), so normalise both before splitting
+  let target = String(req.url || "").replace(/^[a-z]+:\/\//i, "").split("/")[0]
+  if (target.startsWith("[")) {
+    // IPv6 literal: [::1]:443
+    const close = target.indexOf("]")
+    target = target.slice(0, close + 1) + ":" + (target.slice(close + 2) || "443")
+  }
+  const cut = target.lastIndexOf(":")
+  const host = cut > 0 ? target.slice(0, cut) : target
+  const port = Number(cut > 0 ? target.slice(cut + 1) : 443)
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    log({ event: "connect-bad-target", raw: String(req.url || "") })
+    return fail(400, "Bad Request")
+  }
   const allowed = opts.connectAllow.some((a) => a === host + ":" + port || a === host)
   if (!allowed) return fail(403, "Forbidden")
   client.on("error", () => client.destroy())

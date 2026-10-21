@@ -2,6 +2,9 @@ general_settings:
   store_model_in_db: true
 
 router_settings:
+  # never park a deployment: a parked one is an instant 429 for the only IP, and
+  # the gateway hands out long Retry-After windows
+  disable_cooldowns: true
   enable_quota_routing: true
   quota_max_wait_seconds: 75
   # ocproxy walks its own egress pool; keep router retries shallow so a request
@@ -27,6 +30,18 @@ model_list:
       model: openai/deepseek-v4.1-flash-free
       api_base: http://ocproxy:8788/v1
       api_key: os.environ/OC_KEY
+      timeout: 180
+      stream_timeout: 180
+    model_info:
+      mode: chat
+
+  # same model on the Render relay's egress IP: anonymous quota is per IP, so a
+  # second deployment is a second allowance and the router fails across them
+  - model_name: deepseek-v4.1-flash-free
+    litellm_params:
+      model: openai/deepseek-v4.1-flash-free
+      api_base: https://ocproxy-egress-1.onrender.com/v1
+      api_key: os.environ/RENDER_OC_KEY
       timeout: 180
       stream_timeout: 180
     model_info:

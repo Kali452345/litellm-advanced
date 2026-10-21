@@ -1,2 +1,3 @@
 *.ipynb linguist-vendored
-ui/litellm-dashboard/src/lib/http/schema.d.ts linguist-generated
+ui/litellm-dashboard/src/lib/http/schema.d.ts linguist-generatedocproxy/render-keepalive.sh text eol=lf
+ocproxy/tunnels.sh text eol=lf

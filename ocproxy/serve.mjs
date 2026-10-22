@@ -292,7 +292,7 @@ async function handleChat(req, res) {
     const names = new Set(callerTools.map((t) => t?.function?.name))
     payload.tools = [...callerTools, ...baseTools.filter((t) => !names.has(t.function.name))]
   }
-  log({ event: "request", model: payload.model, messages: payload.messages.length, tools: (payload.tools || []).length, title: isTitle, stream: wantsStream })
+  log({ event: "request", model: payload.model, maxTokens: payload.max_tokens, messages: payload.messages.length, tools: (payload.tools || []).length, title: isTitle, stream: wantsStream })
   payload.stream = true
   if (!wantsStream) payload.stream_options = { ...(payload.stream_options || {}), include_usage: true }
 
@@ -402,12 +402,12 @@ async function handleChat(req, res) {
       const beat = setInterval(() => {
         if (!closed) res.write(": ping\n\n")
       }, 10_000)
-      const finish = (aborted) => {
+      const finish = (aborted, reason = "") => {
         if (closed) return
         closed = true
         clearInterval(beat)
         if (aborted) {
-          log({ event: "stream-abort", proxy: entry?.url || "direct" })
+          log({ event: "stream-abort", proxy: entry?.url || "direct", reason })
           try {
             res.write("\ndata: [DONE]\n\n")
           } catch {}
@@ -417,12 +417,12 @@ async function handleChat(req, res) {
         res.end()
       }
       upstream.setTimeout(opts.streamIdleMs, () => {
+        finish(true, "idle")
         upstream.destroy(new Error("stream idle"))
-        finish(true)
       })
       upstream.on("data", () => upstream.setTimeout(opts.streamIdleMs))
       upstream.on("end", () => finish(false))
-      upstream.on("error", () => finish(true))
+      upstream.on("error", (e) => finish(true, e?.code || e?.message || "error"))
       req.on("close", () => {
         closed = true
         clearInterval(beat)

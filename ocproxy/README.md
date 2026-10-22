@@ -26,6 +26,11 @@ Consequences for running this:
 - The pool must be deep before serving is reliable. The harvester keeps retrying
   every 60 s until it has `OC_POOL_TARGET` working proxies, and accumulates them
   across passes.
+- Routing is per egress: each attempt takes a different entry, and every entry keeps
+  its own health, fail count and park timer. One bad egress never condemns the pool.
+  A parked entry is re-probed after `OC_REVIVE_MS` (60 s) so a refilled bucket or a
+  reconnected tunnel comes back on its own; a fully expired park returns to normal
+  rotation anyway.
 - Every proxy dies eventually — often within a minute, sometimes after accepting the
   request and going silent. The host IP is the default route; when it is rate-limited,
   requests use the freshest, highest-scoring proxies and retry across them. A proxy
@@ -209,6 +214,7 @@ All routes require `Authorization: Bearer $OC_KEY` when `--key`/`OC_KEY` is set.
 | `OC_DIRECT_FIRST_BYTE_MS` | `120000` | same for the host IP |
 | `OC_STREAM_IDLE_MS` | `90000` | close a stream cleanly after this much upstream silence |
 | `OC_CONNECT_ALLOW` | `opencode.ai:443` | targets the CONNECT relay may reach |
+| `OC_REVIVE_MS` | `60000` | re-probe a parked egress this soon, instead of waiting out the whole park |
 | `OC_MODELS` | built-in list | comma-separated models served by `/v1/models` |
 | `OC_TOKEN`, `OC_ORG` | — | optional account mode without the CLI |
 | `OC_PROXY_SOURCES` | built-in list | file of extra source URLs, one per line |

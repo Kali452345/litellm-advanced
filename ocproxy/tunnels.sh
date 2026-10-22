@@ -4,7 +4,8 @@
 # the pool and survive every free-proxy harvest.
 #
 #   ./tunnels.sh start      start + validate every host in egress-hosts.txt
-#   ./tunnels.sh check      re-validate live tunnels
+#   ./tunnels.sh keep       restart dead tunnels and republish, without probing
+#   ./tunnels.sh check      re-validate live tunnels (costs one request each)
 #   ./tunnels.sh status     show pid and last verdict per host
 #   ./tunnels.sh stop       kill everything and empty egress.txt
 #
@@ -13,13 +14,13 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 HOSTS="${EGRESS_HOSTS:-$DIR/egress-hosts.txt}"
-OUT="${EGRESS_OUT:-$DIR/egress.txt}"
+OUT="${EGRESS_OUT:-$DIR/../egress/egress.txt}"
 STATE="${EGRESS_STATE:-$DIR/.tunnels}"
 BASE="${EGRESS_PORT_BASE:-10900}"
 BIND="${EGRESS_BIND:-0.0.0.0}"
 TARGET="${EGRESS_TARGET:-host.docker.internal}"
 
-mkdir -p "$STATE"
+mkdir -p "$STATE" "$(dirname "$OUT")"
 [[ -f "$HOSTS" ]] || { echo "missing $HOSTS (one [user@]host[:port] per line)" >&2; exit 2; }
 
 mapfile -t HOSTLIST < <(grep -vE '^\s*(#|$)' "$HOSTS")
@@ -113,10 +114,26 @@ cmd_stop() {
   echo "stopped"
 }
 
+# Cheap supervision: no gateway requests, so it can run every couple of minutes
+# without eating into the free quota.
+cmd_keep() {
+  for i in "${!HOSTLIST[@]}"; do
+    local pid="" alive=0
+    [[ -f "$STATE/$i.pid" ]] && pid="$(cat "$STATE/$i.pid")" && kill -0 "$pid" 2>/dev/null && alive=1
+    if [[ "$alive" == 0 ]]; then
+      start_one "$i"
+      # keep the previous verdict: a restart alone does not prove the IP is known
+      echo "$(date -Is) restarted tunnel $i"
+    fi
+  done
+  publish
+}
+
 case "${1:-start}" in
   start) cmd_start ;;
   check) cmd_check ;;
   status) cmd_status ;;
+  keep) cmd_keep ;;
   stop) cmd_stop ;;
   *) echo "usage: $0 {start|check|status|stop}"; exit 1 ;;
 esac

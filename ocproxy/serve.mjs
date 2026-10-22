@@ -507,6 +507,30 @@ setTimeout(async () => {
   }
 }, 1500)
 
+// Re-probe parked egress periodically: a 429 bucket refills and a dropped tunnel
+// comes back, so waiting out the whole park window strands capacity. One cheap
+// gate probe per due entry, at most every OC_REVIVE_MS.
+setInterval(async () => {
+  const due = pool.dueForRevive()
+  for (const s of due.slice(0, 5)) {
+    if (pool.inFlight.get(s.key)) continue
+    pool.begin(s.key)
+    try {
+      const r = await probe({ url: s.url, dial: s.dial }, { timeoutMs: 12_000 })
+      if (r.status === 200) pool.report(s.key, "ok")
+      else if (r.status === 429) pool.report(s.key, "limited")
+      else if (r.status === 403) pool.report(s.key, "reject")
+      else pool.report(s.key, "transport")
+      log({ event: "revive", proxy: s.url, status: r.status })
+    } catch (e) {
+      pool.report(s.key, "transport")
+      log({ event: "revive", proxy: s.url, status: 0, err: e.message })
+    } finally {
+      pool.end(s.key)
+    }
+  }
+}, 15_000).unref?.()
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost")
   const path = url.pathname.replace(/\/+$/, "")

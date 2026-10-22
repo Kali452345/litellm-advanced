@@ -19,11 +19,15 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}
       - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in .env}
       - STORE_MODEL_IN_DB=True
+      # bearer for the ocproxy sidecar, referenced as os.environ/OC_KEY
+      - OC_KEY=${OC_KEY:?set OC_KEY in .env}
       - UI_USERNAME=${UI_USERNAME:-admin}
       - UI_PASSWORD=${UI_PASSWORD:-${LITELLM_MASTER_KEY}}
       # passed through only when set, since an empty one would make every absolute
       # url the proxy builds relative
       - PROXY_BASE_URL
+      # relayed egress on Render (optional); see ocproxy/RENDER.md
+      - RENDER_OC_KEY
       # uvicorn only honours X-Forwarded-Proto from addresses listed here, so without it
       # a request through the caddy service looks like plain http to the proxy
       - FORWARDED_ALLOW_IPS
@@ -59,7 +63,7 @@ services:
       - "--port"
       - "8788"
       - "--static-file"
-      - "/data/egress.txt"
+      - "/data/egress/egress.txt"
       - "--log"
       - "/data/ocproxy.jsonl"
     environment:
@@ -74,12 +78,17 @@ services:
       - OC_TOKEN
       - OC_ORG
       - OC_MODELS=${OC_MODELS:-deepseek-v4.1-flash-free}
-      - OC_STATIC_FILE=/data/egress.txt
+      - OC_STATIC_FILE=/data/egress/egress.txt
     volumes:
       - ocproxy_data:/data
-      - ./egress.txt:/data/egress.txt:ro
+      # directory, not file: egress writers publish with mv, which replaces the inode
+      - ./egress:/data/egress:ro
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # the project network's gateway. host-gateway resolves to the docker0
+      # address (172.17.0.1), which is unroutable from this network, so the ssh
+      # egress tunnels published by tunnels.sh cannot be reached through it.
+      # Re-check with `docker network inspect <project>_default` if it changes.
+      - "host.docker.internal:172.18.0.1"
     logging:
       driver: json-file
       options:

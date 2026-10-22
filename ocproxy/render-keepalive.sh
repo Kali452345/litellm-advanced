@@ -19,13 +19,13 @@
 set -uo pipefail
 
 HOSTS_FILE="${OC_RENDER_HOSTS:-$HOME/.config/ocproxy/render-hosts}"
-EGRESS_FILE="${OC_EGRESS_FILE:-$(cd "$(dirname "$0")" && pwd)/../egress.txt}"
+EGRESS_FILE="${OC_EGRESS_FILE:-$(cd "$(dirname "$0")" && pwd)/../egress/egress.txt}"
 STATE_DIR="${OC_RENDER_STATE:-$HOME/.local/state/ocproxy}"
 FAILS_BEFORE_DROP="${FAILS_BEFORE_DROP:-3}"
 TIMEOUT="${TIMEOUT:-90}"
 MARKER="render-relay"
 
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$(dirname "$EGRESS_FILE")"
 [ -f "$HOSTS_FILE" ] || { echo "$(date -Is) no host file at $HOSTS_FILE"; exit 0; }
 
 # serialise runs so two overlapping crons cannot fight over egress.txt

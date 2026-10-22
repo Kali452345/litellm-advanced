@@ -154,3 +154,6 @@ litellm.log
 # ocproxy harvest output
 ocproxy/proxies.txt
 ocproxy/proxies.txt.tmp
+
+# egress list published by ocproxy/tunnels.sh
+/egress/

@@ -5,7 +5,18 @@ import fs from "node:fs"
 import { parseProxy } from "./connect.mjs"
 
 export class ProxyPool {
-  constructor({ staticProxies = [], staticFile = null, file = null, limitedMs = 6 * 3600_000, deadFails = 3, log = () => {} } = {}) {
+  constructor({
+    staticProxies = [],
+    staticFile = null,
+    file = null,
+    limitedMs = 6 * 3600_000,
+    deadFails = 3,
+    // how soon a parked egress may be re-probed, so a recovered IP comes back
+    // without waiting out the whole park window
+    reviveMs = Number(process.env.OC_REVIVE_MS || 60_000),
+    log = () => {},
+  } = {}) {
+    this.reviveMs = reviveMs
     this.file = file
     this.staticFile = staticFile
     this.limitedMs = limitedMs
@@ -37,6 +48,7 @@ export class ProxyPool {
       origin,
       status: "new",
       fails: 0,
+      reviveAt: 0,
       okCount: 0,
       lastUsed: 0,
       lastOk: 0,
@@ -160,6 +172,7 @@ export class ProxyPool {
       s.okCount++
       s.lastOk = now
       s.until = 0
+      s.reviveAt = 0
       s.latency = s.latency ? Math.round(s.latency * 0.7 + latency * 0.3) : latency
       return
     }
@@ -167,6 +180,8 @@ export class ProxyPool {
       s.status = "ok" // still reachable, just out of bucket
       s.fails = 0
       s.until = now + this.limitedMs
+      // a quota park is not permanent: re-check it well before the window ends
+      s.reviveAt = now + this.reviveMs
       return
     }
     if (outcome === "reject") {
@@ -175,12 +190,24 @@ export class ProxyPool {
       s.fails++
       s.status = "new"
       s.until = now + 30 * 60_000
+      s.reviveAt = now + this.reviveMs * 5
       return
     }
     // transport failure
     s.fails++
     s.status = s.fails >= this.deadFails ? "dead" : "new"
-    s.until = now + Math.min(15 * 60_000, 30_000 * 2 ** Math.max(0, s.fails - 1))
+    const backoff = Math.min(15 * 60_000, 30_000 * 2 ** Math.max(0, s.fails - 1))
+    s.until = now + backoff
+    s.reviveAt = now + Math.min(backoff, this.reviveMs)
+  }
+
+  // Parked entries whose revive window elapsed. Only these are re-probed, so a
+  // healthy pool costs nothing and a recovered IP returns on its own.
+  dueForRevive() {
+    const now = Date.now()
+    return [...this.state.values()].filter(
+      (s) => s.until > now && s.reviveAt && s.reviveAt <= now && !this.inFlight.get(s.key),
+    )
   }
 
   markAllLimited(ms = this.limitedMs) {

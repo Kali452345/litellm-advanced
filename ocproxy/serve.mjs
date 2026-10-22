@@ -399,6 +399,7 @@ async function handleChat(req, res) {
       // keep the client alive while the model thinks, and finish cleanly if the
       // upstream really dies mid-stream instead of hanging to LiteLLM's timeout
       let closed = false
+      let sawFinish = false
       const beat = setInterval(() => {
         if (!closed) res.write(": ping\n\n")
       }, 10_000)
@@ -406,8 +407,12 @@ async function handleChat(req, res) {
         if (closed) return
         closed = true
         clearInterval(beat)
-        if (aborted) {
+        if (aborted && !sawFinish) {
+          // died before any finish chunk: do not claim [DONE], so LiteLLM raises
+          // and can retry instead of handing the client half a tool call
           log({ event: "stream-abort", proxy: entry?.url || "direct", reason })
+        } else if (aborted) {
+          log({ event: "stream-abort-late", proxy: entry?.url || "direct", reason })
           try {
             res.write("\ndata: [DONE]\n\n")
           } catch {}
@@ -416,11 +421,15 @@ async function handleChat(req, res) {
         }
         res.end()
       }
+
       upstream.setTimeout(opts.streamIdleMs, () => {
         finish(true, "idle")
         upstream.destroy(new Error("stream idle"))
       })
-      upstream.on("data", () => upstream.setTimeout(opts.streamIdleMs))
+      upstream.on("data", (c) => {
+        upstream.setTimeout(opts.streamIdleMs)
+        if (!sawFinish && c.includes('"finish_reason":"')) sawFinish = true
+      })
       upstream.on("end", () => finish(false))
       upstream.on("error", (e) => finish(true, e?.code || e?.message || "error"))
       req.on("close", () => {

@@ -9,16 +9,14 @@ router_settings:
   quota_max_wait_seconds: 75
   # ocproxy walks its own egress pool; keep router retries shallow so a request
   # does not multiply into hundreds of upstream calls.
-  num_retries: 2
+  num_retries: 1
   fallbacks:
     - deepseek-v4.1-flash-free: ["GLM-5.3"]
 
 litellm_settings:
   drop_params: true
-  cache: true
-  cache_params:
-    type: local
-    ttl: 900
+  # off: a truncated reply would be cached and replayed to every retry
+  cache: false
 
 # Free OpenCode models, served by the ocproxy sidecar. The sidecar supplies the
 # fingerprint and the rotating egress IPs; LiteLLM only sees a plain

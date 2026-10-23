@@ -11,12 +11,15 @@ router_settings:
   # does not multiply into hundreds of upstream calls.
   num_retries: 1
   fallbacks:
-    - deepseek-v4.1-flash-free: ["GLM-5.3"]
+    - deepseek-v4.1-flash-free: ["GLM-5.3", "deepseek-v4.1-flash-paid"]
 
 litellm_settings:
   drop_params: true
   # off: a truncated reply would be cached and replayed to every retry
-  cache: false
+  cache: true
+  cache_params:
+    type: local
+    ttl: 120
 
 # Free OpenCode models, served by the ocproxy sidecar. The sidecar supplies the
 # fingerprint and the rotating egress IPs; LiteLLM only sees a plain
@@ -42,5 +45,16 @@ model_list:
       api_key: os.environ/RENDER_OC_KEY
       timeout: 180
       stream_timeout: 180
+    model_info:
+      mode: chat
+
+  # Paid endpoint; prefix-cached upstream. Fallback target for the free route.
+  - model_name: deepseek-v4.1-flash-paid
+    litellm_params:
+      model: openai/deepseek-v4.1-flash-1017
+      api_base: https://api.experientiallabs.ai/v1
+      api_key: os.environ/EXP_KEY
+      timeout: 300
+      stream_timeout: 300
     model_info:
       mode: chat

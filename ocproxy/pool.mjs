@@ -13,7 +13,7 @@ export class ProxyPool {
     deadFails = 3,
     // how soon a parked egress may be re-probed, so a recovered IP comes back
     // without waiting out the whole park window
-    reviveMs = Number(process.env.OC_REVIVE_MS || 60_000),
+    reviveMs = Number(process.env.OC_REVIVE_MS || 120_000),
     log = () => {},
   } = {}) {
     this.reviveMs = reviveMs
@@ -145,7 +145,16 @@ export class ProxyPool {
         return { s, score }
       })
       .sort((a, b) => b.score - a.score)
-    if (!ranked.length) return null
+    if (!ranked.length) {
+      // Everything is quota-parked. A park is only a hint, and the gateway hands
+      // out ~13h Retry-After windows that are far longer than the real refill, so
+      // giving up here would strand the whole pool behind a single direct try.
+      // Retry the soonest-due parked entry instead.
+      const parked = [...this.state.values()]
+        .filter((s) => s.status !== "dead" && !exclude.has(s.key))
+        .sort((a, b) => a.until - b.until)
+      return parked.length ? parked[0] : null
+    }
     const slice = ranked.slice(0, Math.min(5, ranked.length))
     return slice[Math.floor(Math.random() * slice.length)].s
   }

@@ -11,7 +11,7 @@ router_settings:
   # does not multiply into hundreds of upstream calls.
   num_retries: 1
   fallbacks:
-    - deepseek-v4.1-flash-free: ["GLM-5.3", "deepseek-v4.1-flash-paid"]
+    - deepseek-v4.1-flash-free: ["GLM-5.3"]
 
 litellm_settings:
   drop_params: true
@@ -48,13 +48,13 @@ model_list:
     model_info:
       mode: chat
 
-  # Paid endpoint; prefix-cached upstream. Fallback target for the free route.
-  - model_name: deepseek-v4.1-flash-paid
+  # fallback target: same free gateway via the same sidecar, different model id
+  - model_name: GLM-5.3
     litellm_params:
-      model: openai/deepseek-v4.1-flash-1017
-      api_base: https://api.experientiallabs.ai/v1
-      api_key: os.environ/EXP_KEY
-      timeout: 300
-      stream_timeout: 300
+      model: openai/glm-5.3-flash-free
+      api_base: http://ocproxy:8788/v1
+      api_key: os.environ/OC_KEY
+      timeout: 180
+      stream_timeout: 180
     model_info:
       mode: chat

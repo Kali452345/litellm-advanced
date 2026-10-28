@@ -28,7 +28,6 @@ services:
       - PROXY_BASE_URL
       # relayed egress on Render (optional); see ocproxy/RENDER.md
       - RENDER_OC_KEY
-      - EXP_KEY
       # uvicorn only honours X-Forwarded-Proto from addresses listed here, so without it
       # a request through the caddy service looks like plain http to the proxy
       - FORWARDED_ALLOW_IPS

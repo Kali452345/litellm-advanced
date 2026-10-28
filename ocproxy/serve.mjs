@@ -516,10 +516,12 @@ setTimeout(async () => {
   }
 }, 1500)
 
-// Re-probe parked egress periodically: a 429 bucket refills and a dropped tunnel
-// comes back, so waiting out the whole park window strands capacity. One cheap
-// gate probe per due entry, at most every OC_REVIVE_MS.
-setInterval(async () => {
+// Opt-in only: probing costs a real request against the probed IP's quota, and
+// real traffic already retries parked entries (pool.pick falls back to the
+// soonest-due one, and any 200 clears the park). With no probe ticker the pool
+// learns purely from live requests, so no quota is spent just checking.
+// Set OC_REVIVE=1 to bring the background prober back.
+if (process.env.OC_REVIVE === "1") setInterval(async () => {
   const due = pool.dueForRevive()
   for (const s of due.slice(0, 5)) {
     if (pool.inFlight.get(s.key)) continue

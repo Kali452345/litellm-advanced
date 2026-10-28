@@ -22,6 +22,10 @@ export class ProxyPool {
     this.limitedMs = limitedMs
     this.deadFails = deadFails
     this.log = log
+    // key of the most recent egress that actually served a request; it is
+    // preferred while idle so a working IP keeps the traffic instead of being
+    // re-rolled on every turn (which also burns five IPs' quota per request).
+    this.lastGood = null
     this.state = new Map()
     this.order = []
     this.mtime = 0
@@ -136,6 +140,12 @@ export class ProxyPool {
   // Highest-scoring, least-busy proxy; random within the top slice so parallel
   // requests spread instead of hammering one IP into a 429.
   pick(exclude = new Set()) {
+    // sticky: keep using the last egress that worked, but only while it is idle
+    // and not parked -- so parallel requests still spread and a 429 hands over.
+    const sticky = this.lastGood && !exclude.has(this.lastGood) ? this.state.get(this.lastGood) : null
+    if (sticky && sticky.status !== "dead" && sticky.until <= Date.now() && !this.inFlight.get(sticky.key)) {
+      return sticky
+    }
     const ranked = this.candidates()
       .filter((s) => !exclude.has(s.key))
       .map((s) => {
@@ -183,6 +193,7 @@ export class ProxyPool {
       s.until = 0
       s.reviveAt = 0
       s.latency = s.latency ? Math.round(s.latency * 0.7 + latency * 0.3) : latency
+      this.lastGood = key
       return
     }
     if (outcome === "limited") {

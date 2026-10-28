@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import Request
+from fastapi.routing import APIRoute
 
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import (
@@ -15,7 +16,6 @@ from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
     check_complete_credentials,
     custom_auth_common_checks_warning,
-    warn_once_if_custom_auth_skips_common_checks,
     get_end_user_id_from_request_body,
     get_key_mcp_rpm_limit,
     get_key_model_rpm_limit,
@@ -26,6 +26,8 @@ from litellm.proxy.auth.auth_utils import (
     get_project_model_tpm_limit,
     get_request_route_template,
     is_request_body_safe,
+    pre_db_read_auth_checks,
+    warn_once_if_custom_auth_skips_common_checks,
 )
 
 
@@ -3279,3 +3281,83 @@ class TestIsRequestBodySafeBlocksAwsIdentitySelectors:
             )
             is True
         )
+
+
+def _route_of(path: str) -> APIRoute:
+    """The route object FastAPI itself puts in the scope for ``path``, so a renamed
+    endpoint fails these tests instead of silently leaving them passing."""
+    from litellm.proxy.proxy_server import app
+
+    return next(route for route in app.routes if isinstance(route, APIRoute) and route.path == path)
+
+
+def _dispatched_to(route: APIRoute | None, path: str) -> Request:
+    return Request({"type": "http", "method": "POST", "path": path, "headers": [], "route": route})
+
+
+class TestBannedParamBlocklistSkipsTheRoutesThatOwnThoseParams:
+    """The blocklist stops a caller retargeting an LLM call away from the admin's pinned
+    api_base (huntr 4001e1a2). Registering a provider key and measuring its per-minute cap
+    both take that same field as their own payload, so screening those two rejects every
+    attempt to use them, while everything else has to stay screened."""
+
+    @pytest.fixture(autouse=True)
+    def _proxy_without_opt_ins(self, monkeypatch):
+        monkeypatch.setattr("litellm.proxy.proxy_server.general_settings", {})
+        monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", None)
+
+    async def test_adding_a_key_reached_at_its_own_base_url_is_allowed(self):
+        """The raises block is what makes this a test of the route rather than of the body:
+        the blocklist covers this payload, and reaching the route anyway is the fix."""
+        body = {
+            "provider": "gemini",
+            "api_key": "AIza-second-key",
+            "api_base": "https://generativelanguage.googleapis.com",
+            "rpm": 5,
+        }
+        with pytest.raises(ValueError, match="api_base is not allowed in request body"):
+            is_request_body_safe(request_body=body, general_settings={}, llm_router=None, model="")
+
+        await pre_db_read_auth_checks(
+            request=_dispatched_to(_route_of("/provider/keys"), "/provider/keys"),
+            request_data=body,
+            route="/provider/keys",
+        )
+
+    async def test_probing_the_cap_of_a_key_at_its_own_base_url_is_allowed(self):
+        body = {
+            "model": "gemini/gemini-2.5-flash",
+            "api_key": "AIza-second-key",
+            "api_base": "https://generativelanguage.googleapis.com",
+            "max_requests": 60,
+        }
+        with pytest.raises(ValueError, match="api_base is not allowed in request body"):
+            is_request_body_safe(request_body=body, general_settings={}, llm_router=None, model=body["model"])
+
+        await pre_db_read_auth_checks(
+            request=_dispatched_to(_route_of("/provider/rate_limit/probe"), "/provider/rate_limit/probe"),
+            request_data=body,
+            route="/provider/rate_limit/probe",
+        )
+
+    async def test_an_llm_call_still_cannot_name_its_own_base_url(self):
+        with pytest.raises(ValueError, match="api_base is not allowed in request body"):
+            await pre_db_read_auth_checks(
+                request=_dispatched_to(_route_of("/chat/completions"), "/chat/completions"),
+                request_data={
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "api_base": "https://attacker.test/v1",
+                },
+                route="/chat/completions",
+            )
+
+    async def test_a_path_no_endpoint_claimed_is_still_screened(self):
+        """The exemption keys off the handler FastAPI resolved, not off the path the caller
+        typed, so an unrouted path or a Mount (no ``route`` in the scope) fails closed."""
+        with pytest.raises(ValueError, match="api_base is not allowed in request body"):
+            await pre_db_read_auth_checks(
+                request=_dispatched_to(None, "/provider/keys"),
+                request_data={"api_key": "AIza-second-key", "api_base": "https://attacker.test/v1"},
+                route="/provider/keys",
+            )

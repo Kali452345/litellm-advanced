@@ -39,7 +39,7 @@ import { labelWithDocsHint, labelWithHint } from "@/components/shared/form/Label
 import { MultiSelect } from "@/components/shared/MultiSelect";
 import { SearchSelect } from "@/components/shared/SearchSelect";
 import { useZodForm } from "@/lib/forms/useZodForm";
-import { TagsInput } from "@/app/(dashboard)/guardrails/_components/content_filter/TagsInput";
+import { TagsInput } from "@/components/shared/TagsInput";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useVisitedTabs } from "@/hooks/useVisitedTabs";
 import { toast } from "@/lib/toast";

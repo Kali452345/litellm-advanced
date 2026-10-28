@@ -1,0 +1,143 @@
+name: litellm-advanced
+
+services:
+  litellm:
+    build:
+      context: .
+      target: runtime
+    image: litellm-advanced:local
+    restart: unless-stopped
+    command:
+      - "--config=/app/config.yaml"
+      - "--port=4000"
+      - "--use_v2_migration_resolver"
+      - "--enforce_prisma_migration_check"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/litellm
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in .env}
+      - STORE_MODEL_IN_DB=True
+      # bearer for the ocproxy sidecar, referenced as os.environ/OC_KEY
+      - OC_KEY=${OC_KEY:?set OC_KEY in .env}
+      - UI_USERNAME=${UI_USERNAME:-admin}
+      - UI_PASSWORD=${UI_PASSWORD:-${LITELLM_MASTER_KEY}}
+      # passed through only when set, since an empty one would make every absolute
+      # url the proxy builds relative
+      - PROXY_BASE_URL
+      # relayed egress on Render (optional); see ocproxy/RENDER.md
+      - RENDER_OC_KEY
+      # uvicorn only honours X-Forwarded-Proto from addresses listed here, so without it
+      # a request through the caddy service looks like plain http to the proxy
+      - FORWARDED_ALLOW_IPS
+    # loopback only: put a TLS reverse proxy in front, or reach it over an ssh tunnel
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+      ocproxy:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  # OpenCode free-tier bridge: owns the fingerprint, walks free egress proxies.
+  # No published port; only the litellm container calls it.
+  ocproxy:
+    build:
+      context: ./ocproxy
+    image: ocproxy:local
+    restart: unless-stopped
+    command:
+      - "node"
+      - "serve.mjs"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8788"
+      - "--static-file"
+      - "/data/egress/egress.txt"
+      - "--log"
+      - "/data/ocproxy.jsonl"
+    environment:
+      - OC_KEY=${OC_KEY:?set OC_KEY in .env}
+      - OC_MAX_ATTEMPTS=${OC_MAX_ATTEMPTS:-6}
+      - OC_LIMITED_MS=${OC_LIMITED_MS:-21600000}
+      - OC_POOL_INTERVAL=${OC_POOL_INTERVAL:-1800}
+      - OC_POOL_MAX_CANDIDATES=${OC_POOL_MAX_CANDIDATES:-6000}
+      - OC_POOL_TARGET=${OC_POOL_TARGET:-25}
+      - OC_POOL_CONCURRENCY=${OC_POOL_CONCURRENCY:-200}
+      # optional account mode and model override
+      - OC_TOKEN
+      - OC_ORG
+      - OC_MODELS=${OC_MODELS:-deepseek-v4.1-flash-free}
+      - OC_STATIC_FILE=/data/egress/egress.txt
+    volumes:
+      - ocproxy_data:/data
+      # directory, not file: egress writers publish with mv, which replaces the inode
+      - ./egress:/data/egress:ro
+    extra_hosts:
+      # the project network's gateway. host-gateway resolves to the docker0
+      # address (172.17.0.1), which is unroutable from this network, so the ssh
+      # egress tunnels published by tunnels.sh cannot be reached through it.
+      # Re-check with `docker network inspect <project>_default` if it changes.
+      - "host.docker.internal:172.18.0.1"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # starts only with `--profile tls`, and needs a ./Caddyfile next to this one
+  caddy:
+    profiles:
+      - tls
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - litellm
+
+volumes:
+  db_data:
+    name: litellm_advanced_db_data
+  ocproxy_data:
+    name: litellm_advanced_ocproxy_data
+  caddy_data:
+    name: litellm_advanced_caddy_data
+  caddy_config:
+    name: litellm_advanced_caddy_config

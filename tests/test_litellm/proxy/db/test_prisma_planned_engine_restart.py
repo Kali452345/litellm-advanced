@@ -32,7 +32,7 @@ import signal
 import sys
 import urllib.parse
 from datetime import datetime, timedelta
-from typing import Any, List
+from typing import Any, Final, List
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
@@ -43,6 +43,8 @@ from prisma.engine.errors import EngineConnectionError
 
 from litellm.proxy.db.prisma_client import PrismaWrapper
 from litellm.proxy.utils import PrismaClient
+
+_FORCE_KILL: Final[signal.Signals] = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +62,7 @@ def _make_wrapper(engine_pid: int = 111, iam: bool = False) -> PrismaWrapper:
     prisma = GeneratedPrisma(use_dotenv=False)
     engine = MagicMock()
     engine.process.pid = engine_pid
-    setattr(prisma, "_Prisma__engine", engine)
+    prisma._engine = engine
     return PrismaWrapper(original_prisma=prisma, iam_token_db_auth=iam)
 
 
@@ -155,15 +157,49 @@ def _token_db_url(created: datetime, expires_in: int = 900) -> str:
     return f"postgresql://user:{quoted}@host:5432/db"
 
 
+class _SlottedPrismaClient:
+    """A client shaped the way prisma-client-py shapes ``Prisma`` past the 0.11.0 dev
+    pin: the engine lives in a slot reached through the ``_engine`` property, and the
+    class carries no ``__dict__``, so writing any other attribute name raises."""
+
+    __slots__ = ("_internal_engine",)
+
+    def __init__(self, engine: Any) -> None:
+        self._internal_engine = engine
+
+    @property
+    def _engine(self) -> Any:
+        return self._internal_engine
+
+    @_engine.setter
+    def _engine(self, engine: Any) -> None:
+        self._internal_engine = engine
+
+
 def test_wrapper_instruments_generated_prisma_engine() -> None:
     prisma = GeneratedPrisma(use_dotenv=False)
     engine = MagicMock()
-    setattr(prisma, "_Prisma__engine", engine)
+    prisma._engine = engine
 
     wrapper = PrismaWrapper(original_prisma=prisma, iam_token_db_auth=False)
 
     assert wrapper._active_drain_tracker is not None
     assert prisma._engine._engine is engine
+
+
+def test_wrapper_instruments_a_client_that_keeps_its_engine_in_a_slot() -> None:
+    """prisma-client-py moved the engine off ``Prisma.__engine`` into a slot behind
+    the ``_engine`` property, so a wrapper that writes the old name-mangled
+    attribute raises on connect and takes proxy startup down with it."""
+    engine = MagicMock()
+    engine.process.pid = 111
+    prisma = _SlottedPrismaClient(engine)
+
+    wrapper = PrismaWrapper(original_prisma=prisma, iam_token_db_auth=False)
+
+    assert wrapper._active_drain_tracker is not None
+    assert prisma._engine._engine is engine
+    assert wrapper._get_engine_pid() == 111
 
 
 async def _wait_for_retirements(wrapper: PrismaWrapper) -> None:
@@ -563,7 +599,7 @@ async def test_safe_refresh_cancellation_restores_token_and_cleans_replacement(
     assert wrapper._engine_generation == 0
     assert mock_kill.call_args_list == [
         call(222, signal.SIGTERM),
-        call(222, signal.SIGKILL),
+        call(222, _FORCE_KILL),
     ]
 
 
@@ -594,9 +630,9 @@ async def test_repeated_safe_refreshes_retire_each_replaced_engine(
 
     assert mock_kill.call_args_list == [
         call(111, signal.SIGTERM),
-        call(111, signal.SIGKILL),
+        call(111, _FORCE_KILL),
         call(222, signal.SIGTERM),
-        call(222, signal.SIGKILL),
+        call(222, _FORCE_KILL),
     ]
     assert wrapper._original_prisma is replacement_clients[-1]
     assert wrapper._engine_generation == 2

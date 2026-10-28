@@ -16,7 +16,7 @@ import json
 from collections.abc import Awaitable, Mapping, Sequence
 from json import JSONDecodeError
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast, get_args, get_origin
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -54,7 +54,7 @@ from litellm.proxy.common_utils.config_sync_pubsub import (
     coordination_redis_cache,
     publish_config_change,
 )
-from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
+from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_value_helper, encrypt_value_helper
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.management_endpoints.common_utils import _is_user_team_admin
 from litellm.proxy.management_endpoints.team_endpoints import (
@@ -99,10 +99,13 @@ from litellm.types.proxy.management_endpoints.model_management_endpoints import 
 )
 from litellm.types.router import (
     SPECIAL_MODEL_INFO_PARAMS,
+    UNSETTABLE_LITELLM_PARAM_NAMES,
     Deployment,
     GenericLiteLLMParams,
+    LiteLLM_Params,
     ModelInfo,
     updateDeployment,
+    updateLiteLLMParams,
 )
 from litellm.utils import get_utc_datetime
 
@@ -199,13 +202,63 @@ def _model_alias_table(prisma_client: PrismaClient) -> "TableActions[prisma_mode
     return ModelTableRepository(prisma_client).table
 
 
+def _names_of_closed_string_sets() -> frozenset[str]:
+    def is_closed_set(annotation: object) -> bool:
+        members: Final[tuple[object, ...]] = get_args(annotation)
+        return get_origin(annotation) is Literal or any(get_origin(member) is Literal for member in members)
+
+    return frozenset(name for name, field in LiteLLM_Params.model_fields.items() if is_closed_set(field.annotation))
+
+
+# A param typed as a closed set of strings can never validate its own ciphertext back
+# into the model, so encrypting it at rest makes the stored row unreadable. Those params
+# are never secrets (their legal values are spelled out in the source), so they are
+# stored as written. Derived from the model, so a param added later is covered the day
+# it is added rather than the day it breaks a read.
+_STORED_IN_PLAINTEXT: Final = _names_of_closed_string_sets()
+
+
+def _encrypted_for_storage(
+    litellm_params: Mapping[str, object], new_encryption_key: str | None = None
+) -> dict[str, object]:
+    return {
+        key: encrypt_value_helper(value=value, new_encryption_key=new_encryption_key)
+        if isinstance(value, str) and key not in _STORED_IN_PLAINTEXT
+        else value
+        for key, value in litellm_params.items()
+    }
+
+
+def _deployment_from_stored_row(row: Mapping[str, object]) -> Deployment:
+    """Validate a db row into a ``Deployment``, leaving every encrypted param encrypted.
+
+    Only the params `_encrypted_for_storage` now keeps in plaintext are decrypted, and
+    only so a row written before it did still validates. Everything else stays as stored,
+    because `update_db_model` merges a patch onto this object and writes the result back.
+    """
+    stored_params: Final = row.get("litellm_params")
+    if not isinstance(stored_params, Mapping):
+        return Deployment(**row)
+    return Deployment(
+        **{
+            **row,
+            "litellm_params": {
+                key: decrypt_value_helper(value=value, key=key, return_original_value=True)
+                if isinstance(value, str) and key in _STORED_IN_PLAINTEXT
+                else value
+                for key, value in stored_params.items()
+            },
+        }
+    )
+
+
 async def get_db_model(model_id: str, prisma_client: PrismaClient) -> Deployment | None:
     db_model: Final = await _proxy_model_table(prisma_client).find_unique(where={"model_id": model_id})
 
     if not db_model:
         return None
 
-    deployment_pydantic_obj: Final = Deployment(**db_model.model_dump(exclude_none=True))
+    deployment_pydantic_obj: Final = _deployment_from_stored_row(db_model.model_dump(exclude_none=True))
     return deployment_pydantic_obj
 
 
@@ -295,6 +348,15 @@ def _raise_if_rate_limits_required_but_missing(*, litellm_params: GenericLiteLLM
 
 
 _PTU_PRICED_PAIR: Final = frozenset({"ptu_count", "cost_per_ptu_per_hour"})
+
+
+def _explicitly_cleared(patch: updateLiteLLMParams | ModelInfo, clearable: Sequence[str]) -> tuple[str, ...]:
+    """The fields a patch sent as an explicit null, so a merge can drop them.
+
+    A field left out of the request is absent from `model_fields_set` and keeps its
+    stored value, which is what makes a partial patch partial.
+    """
+    return tuple(field for field in clearable if field in patch.model_fields_set and getattr(patch, field) is None)
 
 
 def _explicitly_cleared_ptu_fields(model_info: ModelInfo | None) -> frozenset[str]:
@@ -548,9 +610,7 @@ def update_db_model(db_model: Deployment, updated_patch: updateDeployment) -> Pr
     # update litellm params
     if updated_patch.litellm_params:
         # Encrypt any sensitive values
-        encrypted_params: Final = {
-            k: encrypt_value_helper(v) for k, v in updated_patch.litellm_params.model_dump(exclude_none=True).items()
-        }
+        encrypted_params: Final = _encrypted_for_storage(updated_patch.litellm_params.model_dump(exclude_none=True))
 
         merged_litellm_params.update(encrypted_params)
 
@@ -567,16 +627,21 @@ def update_db_model(db_model: Deployment, updated_patch: updateDeployment) -> Pr
     # model_info fields like team_id or access groups. SPECIAL_MODEL_INFO_PARAMS are
     # mirrored between litellm_params and model_info by Deployment.__init__, so the
     # clear propagates to both blobs.
+    #
+    # QUOTA_PARAM_NAMES live in litellm_params alone, so their clear pops from there
+    # only. Without it a scope an operator set once can never be unset, which leaves
+    # two credentials permanently sharing one counter. The pinned/dropped param lists
+    # are unset the same way, so turning a temperature pin back off actually takes.
     if updated_patch.litellm_params:
-        for field in updated_patch.litellm_params.model_fields_set:
-            if field in SPECIAL_MODEL_INFO_PARAMS and getattr(updated_patch.litellm_params, field) is None:
-                merged_litellm_params.pop(field, None)
-                merged_model_info.pop(field, None)
+        for field in _explicitly_cleared(updated_patch.litellm_params, SPECIAL_MODEL_INFO_PARAMS):
+            merged_litellm_params.pop(field, None)
+            merged_model_info.pop(field, None)
+        for field in _explicitly_cleared(updated_patch.litellm_params, UNSETTABLE_LITELLM_PARAM_NAMES):
+            merged_litellm_params.pop(field, None)
     if updated_patch.model_info:
-        for field in updated_patch.model_info.model_fields_set:
-            if field in SPECIAL_MODEL_INFO_PARAMS and getattr(updated_patch.model_info, field) is None:
-                merged_model_info.pop(field, None)
-                merged_litellm_params.pop(field, None)
+        for field in _explicitly_cleared(updated_patch.model_info, SPECIAL_MODEL_INFO_PARAMS):
+            merged_model_info.pop(field, None)
+            merged_litellm_params.pop(field, None)
         for field in _explicitly_cleared_ptu_fields(updated_patch.model_info):
             merged_model_info.pop(field, None)
 
@@ -956,9 +1021,8 @@ async def _add_model_to_db(
     # encrypt litellm params #
     _litellm_params_dict: Final = model_params.litellm_params.dict(exclude_none=True)
     _original_litellm_model_name: Final = model_params.litellm_params.model
-    for k, v in _litellm_params_dict.items():
-        encrypted_value = encrypt_value_helper(value=v, new_encryption_key=new_encryption_key)
-        model_params.litellm_params[k] = encrypted_value
+    for k, v in _encrypted_for_storage(_litellm_params_dict, new_encryption_key=new_encryption_key).items():
+        model_params.litellm_params[k] = v
     _data: Final[dict] = {
         "model_id": model_params.model_info.id,
         "model_name": model_params.model_name,
@@ -1594,7 +1658,7 @@ async def delete_model(
                 detail={"error": f"Model with id={model_info.id} not found in db"},
             )
 
-        model_params: Final = Deployment(**model_in_db.model_dump())
+        model_params: Final = _deployment_from_stored_row(model_in_db.model_dump())
         await ModelManagementAuthChecks.can_user_make_model_call(
             model_params=model_params,
             user_api_key_dict=user_api_key_dict,
@@ -1949,7 +2013,7 @@ async def update_model(
                 )
             else:
                 raise Exception("model not found")
-        deployment: Final = Deployment(**_existing_litellm_params.model_dump())
+        deployment: Final = _deployment_from_stored_row(_existing_litellm_params.model_dump())
 
         await ModelManagementAuthChecks.can_user_make_model_call(
             model_params=deployment,
@@ -1976,9 +2040,8 @@ async def update_model(
             _new_litellm_params_dict: Final = model_params.litellm_params.dict(exclude_none=True)
 
             ### ENCRYPT PARAMS ###
-            for k, v in _new_litellm_params_dict.items():
-                encrypted_value = encrypt_value_helper(value=v)
-                model_params.litellm_params[k] = encrypted_value
+            for k, v in _encrypted_for_storage(_new_litellm_params_dict).items():
+                model_params.litellm_params[k] = v
 
             ### MERGE WITH EXISTING DATA ###
             merged_dictionary: Final = {}

@@ -20,12 +20,14 @@ from litellm.proxy.auth.auth_checks import (
     get_team_object,
     log_db_metrics,
 )
+from litellm.proxy.auth.auth_utils import is_unknown_key_rejection
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.db.db_spend_update_writer import (
     debitable_model_access_groups,
     get_llm_router,
 )
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
+from litellm.proxy.spend_tracking.deployment_error_logs import error_logging_enabled
 from litellm.proxy.spend_tracking.spend_log_error_logger import (
     should_suppress_spend_log_tracebacks,
     spend_log_error,
@@ -94,7 +96,7 @@ class _ProxyDBLogger(CustomLogger):
 
         request_route: Final = user_api_key_dict.request_route
         if (
-            _ProxyDBLogger._should_track_errors_in_db() is False
+            not error_logging_enabled()
             or request_route is not None
             and not (
                 RouteChecks.is_llm_api_route(route=request_route) or RouteChecks.is_info_route(route=request_route)
@@ -129,12 +131,15 @@ class _ProxyDBLogger(CustomLogger):
         )
         _metadata["error_information"] = _error_information
 
-        _metadata = await _ProxyDBLogger._enrich_failure_metadata_with_key_info(
-            metadata=_metadata,
+        unknown_key: Final = is_unknown_key_rejection(original_exception)
+        failure_metadata: Final = (
+            _metadata
+            if unknown_key
+            else await _ProxyDBLogger._enrich_failure_metadata_with_key_info(metadata=_metadata)
         )
 
         existing_metadata: Final[dict] = request_data.get("metadata", None) or {}
-        existing_metadata.update(_metadata)
+        existing_metadata.update(failure_metadata)
 
         litellm_metadata_bucket: Final = request_data.get("litellm_metadata")
         if (
@@ -215,6 +220,7 @@ class _ProxyDBLogger(CustomLogger):
             start_time=actual_start_time,
             end_time=datetime.now(),
             org_id=user_api_key_dict.org_id,
+            record_entity_activity=not unknown_key,
         )
 
     @log_db_metrics
@@ -463,21 +469,6 @@ class _ProxyDBLogger(CustomLogger):
                     team_id,
                 )
         return metadata
-
-    @staticmethod
-    def _should_track_errors_in_db():
-        """
-        Returns True if errors should be tracked in the database
-
-        By default, errors are tracked in the database
-
-        If users want to disable error tracking, they can set the disable_error_logs flag in the general_settings
-        """
-        from litellm.proxy.proxy_server import general_settings
-
-        if general_settings.get("disable_error_logs") is True:
-            return False
-        return
 
 
 def _write_spend_metadata_to_kwargs(kwargs: dict, metadata: dict) -> None:

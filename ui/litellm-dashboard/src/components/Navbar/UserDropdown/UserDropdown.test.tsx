@@ -3,27 +3,27 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../../tests/test-utils";
 import UserDropdown from "./UserDropdown";
 
-let mockUseAuthorizedImpl = () => ({
+interface AuthMock {
+  userId: string | null;
+  userEmail: string | null;
+  userRoleLabel: string;
+  premiumUser: boolean;
+}
+
+let mockUseAuthorizedImpl: () => AuthMock = () => ({
   userId: "test-user-id",
   userEmail: "test@example.com",
   userRoleLabel: "Admin",
   premiumUser: false,
 });
 
-let mockUseDisableShowPromptsImpl = () => false;
-
 let mockGetLocalStorageItemImpl = (key: string): string | null => {
   if (key === "disableShowNewBadge") return null;
-  if (key === "disableShowPrompts") return null;
   return null;
 };
 
 vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
   default: () => mockUseAuthorizedImpl(),
-}));
-
-vi.mock("@/app/(dashboard)/hooks/useDisableShowPrompts", () => ({
-  useDisableShowPrompts: () => mockUseDisableShowPromptsImpl(),
 }));
 
 vi.mock("@/utils/localStorageUtils", () => ({
@@ -47,10 +47,8 @@ describe("UserDropdown", () => {
       userRoleLabel: "Admin",
       premiumUser: false,
     });
-    mockUseDisableShowPromptsImpl = () => false;
     mockGetLocalStorageItemImpl = (key: string): string | null => {
       if (key === "disableShowNewBadge") return null;
-      if (key === "disableShowPrompts") return null;
       return null;
     };
   });
@@ -188,56 +186,10 @@ describe("UserDropdown", () => {
     expect(localStorageUtils.emitLocalStorageChange).toHaveBeenCalledWith("disableShowNewBadge");
   });
 
-  it("should toggle hide all prompts switch", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<UserDropdown onLogout={mockOnLogout} />);
-
-    await user.click(getAccountTrigger());
-
-    await waitFor(() => {
-      expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);
-    });
-
-    const toggle = screen.getByLabelText("Toggle hide all prompts");
-    expect(toggle).not.toBeChecked();
-
-    await user.click(toggle);
-
-    const localStorageUtils = vi.mocked(await import("@/utils/localStorageUtils"));
-    expect(localStorageUtils.setLocalStorageItem).toHaveBeenCalledWith("disableShowPrompts", "true");
-    expect(localStorageUtils.emitLocalStorageChange).toHaveBeenCalledWith("disableShowPrompts");
-  });
-
-  it("should toggle hide all prompts switch off", async () => {
-    const user = userEvent.setup();
-    mockUseDisableShowPromptsImpl = () => true;
-    mockGetLocalStorageItemImpl = (key: string): string | null => {
-      if (key === "disableShowPrompts") return "true";
-      return null;
-    };
-
-    renderWithProviders(<UserDropdown onLogout={mockOnLogout} />);
-
-    await user.click(getAccountTrigger());
-
-    await waitFor(() => {
-      expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);
-    });
-
-    const toggle = screen.getByLabelText("Toggle hide all prompts");
-    expect(toggle).toBeChecked();
-
-    await user.click(toggle);
-
-    const localStorageUtils = vi.mocked(await import("@/utils/localStorageUtils"));
-    expect(localStorageUtils.removeLocalStorageItem).toHaveBeenCalledWith("disableShowPrompts");
-    expect(localStorageUtils.emitLocalStorageChange).toHaveBeenCalledWith("disableShowPrompts");
-  });
-
   it("should show Account in the trigger when user id is the default placeholder", () => {
     mockUseAuthorizedImpl = () => ({
       userId: "default_user_id",
-      userEmail: null as any,
+      userEmail: null,
       userRoleLabel: "Admin",
       premiumUser: false,
     });
@@ -249,7 +201,7 @@ describe("UserDropdown", () => {
     const user = userEvent.setup();
     mockUseAuthorizedImpl = () => ({
       userId: "test-user-id",
-      userEmail: null as any,
+      userEmail: null,
       userRoleLabel: "Admin",
       premiumUser: false,
     });
@@ -266,7 +218,7 @@ describe("UserDropdown", () => {
   it("should display dash when user ID is not available", async () => {
     const user = userEvent.setup();
     mockUseAuthorizedImpl = () => ({
-      userId: null as any,
+      userId: null,
       userEmail: "test@example.com",
       userRoleLabel: "Admin",
       premiumUser: false,

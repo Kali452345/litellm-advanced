@@ -1,0 +1,64 @@
+general_settings:
+  store_model_in_db: true
+
+router_settings:
+  # never park a deployment: a parked one is an instant 429 for the only IP, and
+  # the gateway hands out long Retry-After windows
+  disable_cooldowns: true
+  enable_quota_routing: true
+  quota_max_wait_seconds: 75
+  # ocproxy walks its own egress pool; keep router retries shallow so a request
+  # does not multiply into hundreds of upstream calls.
+  num_retries: 1
+  fallbacks:
+    - deepseek-v4.1-flash-free: ["GLM-5.3"]
+
+litellm_settings:
+  drop_params: true
+  # Response cache is back on now that traffic can land on a paid endpoint. A
+  # truncated reply could still be replayed, so the TTL is short: a bad cached
+  # body self-heals in two minutes instead of sticking for the session.
+  # Provider prefix caching (prompt caching) is separate and automatic upstream;
+  # this only saves whole identical turns.
+  cache: true
+  cache_params:
+    type: local
+    ttl: 120
+
+# Free OpenCode models, served by the ocproxy sidecar. The sidecar supplies the
+# fingerprint and the rotating egress IPs; LiteLLM only sees a plain
+# OpenAI-compatible endpoint. OC_KEY is the shared bearer between the two.
+model_list:
+  # only free model enabled for this deployment
+  - model_name: deepseek-v4.1-flash-free
+    litellm_params:
+      model: openai/deepseek-v4.1-flash-free
+      api_base: http://ocproxy:8788/v1
+      api_key: os.environ/OC_KEY
+      timeout: 180
+      stream_timeout: 180
+    model_info:
+      mode: chat
+
+  # same model on the Render relay's egress IP: anonymous quota is per IP, so a
+  # second deployment is a second allowance and the router fails across them
+  - model_name: deepseek-v4.1-flash-free
+    litellm_params:
+      model: openai/deepseek-v4.1-flash-free
+      api_base: https://ocproxy-egress-1.onrender.com/v1
+      api_key: os.environ/RENDER_OC_KEY
+      timeout: 180
+      stream_timeout: 180
+    model_info:
+      mode: chat
+
+  # fallback target: same free gateway via the same sidecar, different model id
+  - model_name: GLM-5.3
+    litellm_params:
+      model: openai/glm-5.3-flash-free
+      api_base: http://ocproxy:8788/v1
+      api_key: os.environ/OC_KEY
+      timeout: 180
+      stream_timeout: 180
+    model_info:
+      mode: chat

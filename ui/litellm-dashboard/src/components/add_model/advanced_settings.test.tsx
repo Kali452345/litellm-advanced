@@ -82,4 +82,63 @@ describe("AdvancedSettings", () => {
     }
     expect(getByText("PTU Effective To (UTC)")).toBeInTheDocument();
   });
+
+  it("offers a per-minute and a per-day request cap for the key being added", async () => {
+    const { getByText, getByLabelText } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    await waitFor(() => {
+      expect(getByText("Requests Per Minute")).toBeInTheDocument();
+    });
+    expect(getByLabelText("Requests Per Minute")).toHaveValue("");
+    expect(getByLabelText("Requests Per Day")).toHaveValue("");
+  });
+
+  it("refuses a cap that is not a whole number of requests", async () => {
+    const { getByText, findByLabelText, findByText } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    fireEvent.change(await findByLabelText("Requests Per Minute"), { target: { value: "2.5" } });
+
+    expect(await findByText("Enter a whole number of requests")).toBeInTheDocument();
+  });
+
+  it("counts those caps per model until the whole key is said to share one allowance", async () => {
+    const { getByText, findByRole, getByRole } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    const perModel = await findByRole("radio", { name: /Per model/ });
+    const shared = getByRole("radio", { name: /Shared across models/ });
+    expect(perModel).toBeChecked();
+    expect(shared).not.toBeChecked();
+
+    fireEvent.click(shared);
+
+    await waitFor(() => {
+      expect(shared).toBeChecked();
+    });
+    expect(perModel).not.toBeChecked();
+  });
+
+  it("asks for a temperature to send only once the operator chooses to pin one", async () => {
+    const { getByText, findByRole, findByLabelText, findByText, queryByLabelText } = renderAdvancedSettings();
+    act(() => {
+      fireEvent.click(getByText("Advanced Settings"));
+    });
+
+    const pin = await findByRole("radio", { name: /Always send this value/ });
+    expect(queryByLabelText("Temperature To Send Instead")).not.toBeInTheDocument();
+
+    fireEvent.click(pin);
+
+    fireEvent.change(await findByLabelText("Temperature To Send Instead"), { target: { value: "9" } });
+
+    expect(await findByText("Enter a temperature between 0 and 2")).toBeInTheDocument();
+  });
 });

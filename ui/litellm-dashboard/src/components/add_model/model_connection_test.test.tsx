@@ -93,13 +93,17 @@ describe("ModelConnectionTest", () => {
     expect(toast.success).toHaveBeenCalledWith("Copied to clipboard");
   });
 
-  it("shows a preparation failure without sending a connection request", async () => {
-    vi.mocked(prepareModelAddRequest).mockResolvedValue(null as never);
+  it.each([
+    { label: "preparation returned nothing", prepared: null },
+    { label: "no model was selected, so nothing was prepared", prepared: [] },
+  ])("asks for a model instead of crashing when $label", async ({ prepared }) => {
+    vi.mocked(prepareModelAddRequest).mockResolvedValue(prepared as never);
 
     render(<ModelConnectionTest formValues={{}} accessToken="sk-test" testMode="chat" />);
     await finishConnectionTest();
 
-    expect(screen.getByText("Failed to prepare model data. Please check your form inputs.")).toBeInTheDocument();
+    expect(screen.getByText("Pick a model to test, then fill in the credentials for it.")).toBeInTheDocument();
+    expect(screen.queryByText(/Cannot destructure/)).not.toBeInTheDocument();
     expect(testConnectionRequest).not.toHaveBeenCalled();
   });
 });

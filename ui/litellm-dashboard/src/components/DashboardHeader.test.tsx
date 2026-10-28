@@ -20,12 +20,6 @@ vi.mock("@/app/(dashboard)/hooks/uiSettings/useUISettings", () => ({ useUISettin
 vi.mock("next/navigation", () => ({ usePathname: () => "/ui/" }));
 vi.mock("@/utils/migratedPages", () => ({ migratedHref: (seg: string) => `/ui/${seg}` }));
 vi.mock("@/hooks/useWorker", () => ({ useWorker: () => ({ isControlPlane: false, selectedWorker: null }) }));
-vi.mock("@/app/(dashboard)/hooks/useDisableShowPrompts", () => ({ useDisableShowPrompts: () => false }));
-vi.mock("@/components/Navbar/BlogDropdown/BlogDropdown", () => ({ BlogDropdown: () => null }));
-vi.mock("@/components/Navbar/CommunityEngagementButtons/CommunityEngagementButtons", () => ({
-  CommunityEngagementButtons: () => null,
-}));
-vi.mock("@/components/Navbar/NotificationsBell/NotificationsBell", () => ({ NotificationsBell: () => null }));
 vi.mock("@/components/Navbar/WorkerDropdown/WorkerDropdown", () => ({ default: () => null }));
 
 describe("DashboardHeader breadcrumb", () => {
@@ -73,5 +67,15 @@ describe("DashboardHeader breadcrumb", () => {
     expect(separators).toHaveLength(1);
     expect(separators[0].className).not.toMatch(/self-stretch/);
     expect(separators[0].className).toContain("data-vertical:self-center");
+  });
+
+  it("keeps the tools to docs and the theme switch, with nothing that markets the product", () => {
+    render(<DashboardHeader page="logs" />);
+
+    expect(screen.getByRole("link", { name: "Docs" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /switch to (dark|light) mode/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /notifications/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Community links" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /blog/i })).not.toBeInTheDocument();
   });
 });

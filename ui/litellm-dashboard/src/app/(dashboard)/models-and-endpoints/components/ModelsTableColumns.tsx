@@ -1,7 +1,7 @@
 "use client";
 
 import { ColumnDef } from "@tanstack/react-table";
-import { Copy, Info, Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { Copy, Info, KeyRound, Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react";
 
 import { ProviderLogo } from "@/components/molecules/models/ProviderLogo";
 import { ModelData } from "@/components/model_dashboard/types";
@@ -13,6 +13,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Switch } from "@/components/ui/switch";
 import { getDisplayModelName } from "@/components/view_model/model_name_display";
 import { copyToClipboard } from "@/utils/dataUtils";
+import type { AddKeyAction, AddKeyTarget } from "./providerKeyTarget";
 
 export const MODEL_ID_COLUMN_ID = "model_info_id";
 export const MODEL_NAME_COLUMN_ID = "model_name";
@@ -248,6 +249,8 @@ interface ModelRowActionsProps {
   userRole: string;
   userID: string;
   isPausing: boolean;
+  addKeyAction?: AddKeyAction;
+  onAddKey?: (target: AddKeyTarget) => void;
   onDeleteClick?: (modelId: string) => void;
   onTogglePauseClick?: (modelId: string, blocked: boolean) => void | Promise<void>;
 }
@@ -257,6 +260,8 @@ function ModelRowActions({
   userRole,
   userID,
   isPausing,
+  addKeyAction,
+  onAddKey,
   onDeleteClick,
   onTogglePauseClick,
 }: ModelRowActionsProps) {
@@ -283,6 +288,30 @@ function ModelRowActions({
 
   return (
     <div className="flex items-center justify-end gap-1.5">
+      {addKeyAction ? (
+        <CellTooltip
+          content={addKeyAction.tooltip}
+          trigger={
+            <span className="inline-flex">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Add another key"
+                data-testid={`model-add-key-${modelId}`}
+                disabled={addKeyAction.kind !== "ready"}
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  if (addKeyAction.kind === "ready" && onAddKey) {
+                    onAddKey(addKeyAction.target);
+                  }
+                }}
+              >
+                <KeyRound className="size-4" />
+              </Button>
+            </span>
+          }
+        />
+      ) : null}
       <span className="flex w-8 shrink-0 items-center justify-center">
         {isPausing ? (
           <Loader2
@@ -345,6 +374,8 @@ export interface ModelsTableColumnDeps {
   onDeleteClick?: (modelId: string) => void;
   onTogglePauseClick?: (modelId: string, blocked: boolean) => void | Promise<void>;
   pausingModelId?: string | null;
+  resolveAddKeyAction?: (model: ModelData) => AddKeyAction;
+  onAddKey?: (target: AddKeyTarget) => void;
 }
 
 export const getModelsTableColumns = ({
@@ -355,6 +386,8 @@ export const getModelsTableColumns = ({
   onDeleteClick,
   onTogglePauseClick,
   pausingModelId,
+  resolveAddKeyAction,
+  onAddKey,
 }: ModelsTableColumnDeps): ColumnDef<ModelData>[] => [
   {
     id: MODEL_ID_COLUMN_ID,
@@ -472,14 +505,16 @@ export const getModelsTableColumns = ({
     enableSorting: false,
     enableHiding: false,
     enableResizing: false,
-    size: 110,
-    minSize: 110,
+    size: 150,
+    minSize: 150,
     cell: ({ row }) => (
       <ModelRowActions
         model={row.original}
         userRole={userRole}
         userID={userID}
         isPausing={pausingModelId === row.original.model_info?.id}
+        addKeyAction={resolveAddKeyAction?.(row.original)}
+        onAddKey={onAddKey}
         onDeleteClick={onDeleteClick}
         onTogglePauseClick={onTogglePauseClick}
       />
